@@ -18,6 +18,15 @@ MODES = {
     "clans": {"name": "Война улыбчивых кланов", "emoji": "🌸", "min_players": 12},
 }
 
+# Mafia Optimisma content
+STICKERS = {
+    "night": "CAACAgIAAxkBAAEEG_FqDzLedweFJqHL0erJaq3SLL8tjAACuaIAAoibeEg8FTAWBjvYkzsE",
+    "morning": "CAACAgIAAxkBAAEEG_NqDzLi1S-Qse1MBhHvjbWtwRwN9AACvpsAAqrUeUiuiO1b_nfIRjsE",
+    "voting": "CAACAgIAAxkBAAEEG_VqDzLk_IN5FhsQYjy8bny3DFw4hwACU6gAAuPeeEizGueZEDHGjjsE",
+    "win_town": "CAACAgIAAxkBAAEEG_dqDzLlHnbGLwoNyG_Qg7JzNRocrAACOaoAAqBXeUj289_nXIJjVTsE",
+    "win_mafia": "CAACAgIAAxkBAAEEG_lqDzLmOQFb1IoUkm-p6OSqb3VOuwAC_7gAAhFoeUgXFzMgFxEUoDsE"
+}
+
 GLOBAL = {
     "registration_pin": [
         "🎲 **Mafia Optimisma** открывает регистрацию!\n\nНажми «➕ Присоединиться», чтобы войти в город.",
