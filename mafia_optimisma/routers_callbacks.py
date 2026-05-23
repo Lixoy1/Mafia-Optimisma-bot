@@ -6,8 +6,8 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .admin import is_chat_admin
-from .content import GLOBAL, MODES, ROLES
-from .engine import GameEngine, pick, role_title
+from .content import GLOBAL, MODES, ROLES, pick, role_title
+from .engine import GameEngine
 from .keyboards import admin_settings_keyboard, join_keyboard, open_bot_keyboard, shop_keyboard, vote_keyboard, night_action_keyboard
 from .models import NightAction, Phase
 from .state import store
