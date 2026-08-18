@@ -1,70 +1,116 @@
-# forced push trigger
-name: Bootstrap verified v3
+name: Bootstrap Mafia Optimisma v3
 
 on:
   workflow_dispatch:
   push:
     branches: [v3-test]
     paths:
-      - '.bootstrap/bundle/**'
       - '.github/workflows/bootstrap-v3.yml'
 
 permissions:
   contents: write
 
 jobs:
-  bootstrap:
+  bootstrap-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout staging branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: v3-test
           fetch-depth: 0
-      - name: Rebuild and verify exact archive
+
+      - name: Assemble, verify, test and publish v3
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap/bundle/chunk00 .bootstrap/bundle/chunk01 .bootstrap/bundle/chunk02 .bootstrap/bundle/chunk03 .bootstrap/bundle/chunk04 > /tmp/mafia_v3_a3.b64
-          base64 -d /tmp/mafia_v3_a3.b64 > /tmp/mafia_v3_a3.tar.xz
-          echo "79d1e979d888507b35cae2c9b88226656d03c1beaf80ddf73b61386738af03e3  /tmp/mafia_v3_a3.tar.xz" | sha256sum -c -
-          mkdir -p /tmp/extract
-          tar -xJf /tmp/mafia_v3_a3.tar.xz -C /tmp/extract
-          grep -Fx '__version__ = "0.3.0a3"' /tmp/extract/mafia_optimisma/__init__.py
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: python -m pip install -r /tmp/extract/requirements.txt
-      - name: Compile and test exact build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd /tmp/extract
+          cat \
+            .bootstrap/parts/part-00 \
+            .bootstrap/parts/part-01 \
+            .bootstrap/final/p2-0 \
+            .bootstrap/final/p2-1 \
+            .bootstrap/final/p2-2 \
+            .bootstrap/final/p2-3 \
+            .bootstrap/final/p2-4a \
+            .bootstrap/final/p2-4b \
+            .bootstrap/final/p2-5a \
+            .bootstrap/final/p2-5b \
+            .bootstrap/parts/part-03 \
+            .bootstrap/parts/part-04 \
+            .bootstrap/parts/part-05 \
+            .bootstrap/final/part-06 \
+            .bootstrap/parts/part-07 \
+            .bootstrap/parts/part-08 \
+            .bootstrap/parts/part-09 \
+            .bootstrap/final/part-10 \
+            .bootstrap/final/part-11 \
+            .bootstrap/final/part-12 > /tmp/mafia_v3.b64
+
+          base64 --decode /tmp/mafia_v3.b64 > /tmp/mafia_v3.zip
+          echo '5118eef5d520e97cfaa77a553f4f9badccfcf5d088462d587663e8f62a3b3f93  /tmp/mafia_v3.zip' | sha256sum -c -
+
+          rm -rf /tmp/mafia-v3-unpack
+          mkdir -p /tmp/mafia-v3-unpack
+          unzip -q /tmp/mafia_v3.zip -d /tmp/mafia-v3-unpack
+          grep -Fx '__version__ = "0.3.0a3"' /tmp/mafia-v3-unpack/mafia_optimisma_v3/mafia_optimisma/__init__.py
+
+          python -m pip install --upgrade pip
+          python -m pip install -r /tmp/mafia-v3-unpack/mafia_optimisma_v3/requirements.txt
+          cd /tmp/mafia-v3-unpack/mafia_optimisma_v3
           python -m compileall -q mafia_optimisma tests run.py
           python tests/test_core.py
           python tests/test_resilience_extra.py
           python tests/test_callbacks_resilience.py
           python tests/test_role_matrix.py
           python tests/test_role_distribution.py
-          python tests/fuzz_role_interactions.py
-          python tests/test_output_formatting.py
           python tests/test_protocol.py
+          python tests/test_output_formatting.py
           python tests/test_storage_sqlite.py
           python tests/smoke_import.py
           python tests/simulate_games.py
           python tests/fuzz_restart.py
-      - name: Publish exact verified build to v3-test
-        shell: bash
-        run: |
-          set -euo pipefail
+          python tests/fuzz_role_interactions.py
+
+          cd "$GITHUB_WORKSPACE"
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/extract/. .
-          rm -f .github/workflows/bootstrap-v3.yml
-          git config user.name "Mafia Optimisma CI"
-          git config user.email "actions@users.noreply.github.com"
+          cp -a /tmp/mafia-v3-unpack/mafia_optimisma_v3/. .
+
+          mkdir -p .github/workflows
+          cat > .github/workflows/ci.yml <<'CI_EOF'
+          name: Mafia Optimisma CI
+          on:
+            push:
+              branches: [main, v3-test]
+            pull_request:
+              branches: [main]
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              timeout-minutes: 30
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-python@v5
+                  with:
+                    python-version: '3.11'
+                    cache: 'pip'
+                - run: python -m pip install -r requirements.txt
+                - run: python -m compileall -q mafia_optimisma tests run.py
+                - run: python tests/test_core.py
+                - run: python tests/test_resilience_extra.py
+                - run: python tests/test_callbacks_resilience.py
+                - run: python tests/test_role_matrix.py
+                - run: python tests/test_role_distribution.py
+                - run: python tests/test_protocol.py
+                - run: python tests/test_output_formatting.py
+                - run: python tests/test_storage_sqlite.py
+                - run: python tests/smoke_import.py
+                - run: python tests/simulate_games.py
+                - run: python tests/fuzz_restart.py
+                - run: python tests/fuzz_role_interactions.py
+          CI_EOF
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m "Deploy Mafia Optimisma v3 0.3.0a3 (verified)"
+          git commit -m 'Install tested Mafia Optimisma v3 0.3.0a3'
           git push origin HEAD:v3-test
