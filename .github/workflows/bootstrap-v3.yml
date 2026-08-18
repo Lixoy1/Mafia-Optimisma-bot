@@ -1,3 +1,4 @@
+# forced push trigger
 name: Bootstrap verified v3
 
 on:
@@ -21,73 +22,40 @@ jobs:
         with:
           ref: v3-test
           fetch-depth: 0
-
       - name: Rebuild and verify exact archive
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap/bundle/chunk00 \
-              .bootstrap/bundle/chunk01 \
-              .bootstrap/bundle/chunk02 \
-              .bootstrap/bundle/chunk03 \
-              .bootstrap/bundle/chunk04 > /tmp/mafia_v3_a3.b64
+          cat .bootstrap/bundle/chunk00 .bootstrap/bundle/chunk01 .bootstrap/bundle/chunk02 .bootstrap/bundle/chunk03 .bootstrap/bundle/chunk04 > /tmp/mafia_v3_a3.b64
           base64 -d /tmp/mafia_v3_a3.b64 > /tmp/mafia_v3_a3.tar.xz
           echo "79d1e979d888507b35cae2c9b88226656d03c1beaf80ddf73b61386738af03e3  /tmp/mafia_v3_a3.tar.xz" | sha256sum -c -
           mkdir -p /tmp/extract
           tar -xJf /tmp/mafia_v3_a3.tar.xz -C /tmp/extract
           grep -Fx '__version__ = "0.3.0a3"' /tmp/extract/mafia_optimisma/__init__.py
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: /tmp/extract/requirements.txt
-
       - name: Install dependencies
         run: python -m pip install -r /tmp/extract/requirements.txt
-
-      - name: Compile
+      - name: Compile and test exact build
+        shell: bash
         run: |
+          set -euo pipefail
           cd /tmp/extract
           python -m compileall -q mafia_optimisma tests run.py
-
-      - name: Core tests
-        run: |
-          cd /tmp/extract
           python tests/test_core.py
-
-      - name: Resilience tests
-        run: |
-          cd /tmp/extract
           python tests/test_resilience_extra.py
           python tests/test_callbacks_resilience.py
-
-      - name: Role tests
-        run: |
-          cd /tmp/extract
           python tests/test_role_matrix.py
           python tests/test_role_distribution.py
           python tests/fuzz_role_interactions.py
-
-      - name: Protocol and output tests
-        run: |
-          cd /tmp/extract
           python tests/test_output_formatting.py
           python tests/test_protocol.py
-
-      - name: SQLite and import smoke
-        run: |
-          cd /tmp/extract
           python tests/test_storage_sqlite.py
           python tests/smoke_import.py
-
-      - name: Headless game simulations
-        run: |
-          cd /tmp/extract
           python tests/simulate_games.py
           python tests/fuzz_restart.py
-
       - name: Publish exact verified build to v3-test
         shell: bash
         run: |
