@@ -235,6 +235,42 @@ class GameEngine:
             return str(int(number))
         return f"{number:g}"
 
+    @staticmethod
+    def _pm_permanently_unavailable(exc: Exception) -> bool:
+        # Only explicit Telegram permission/addressing errors prove that the bot
+        # cannot write to this user. A timeout/network hiccup must never eject a
+        # registered player.
+        if isinstance(exc, TelegramForbiddenError):
+            return True
+        if isinstance(exc, TelegramBadRequest):
+            message = str(exc).lower()
+            permanent_markers = (
+                "chat not found",
+                "user not found",
+                "bot was blocked",
+                "bot can't initiate conversation",
+                "bot cannot initiate conversation",
+                "user is deactivated",
+            )
+            return any(marker in message for marker in permanent_markers)
+        return False
+
+    async def _probe_private_chat(self, bot: Bot, user_id: int) -> bool | None:
+        """Return True=reachable, False=definitely unreachable, None=temporary uncertainty."""
+        for attempt in range(2):
+            try:
+                await bot.send_chat_action(user_id, "typing")
+                return True
+            except Exception as exc:
+                if self._pm_permanently_unavailable(exc):
+                    return False
+                self.log.warning(
+                    "Temporary PM probe failure user=%s attempt=%s: %s",
+                    user_id, attempt + 1, exc,
+                )
+                await asyncio.sleep(0)
+        return None
+
     def _feature(self, game: GameState | None, key: str, fallback: bool) -> bool:
         raw = self._game_config(game).get(key, fallback)
         if isinstance(raw, str):
@@ -860,20 +896,25 @@ class GameEngine:
                 return
 
             unreachable: list[PlayerState] = []
-            for p in game.players.values():
-                try:
-                    await bot.send_chat_action(p.user_id, "typing")
-                except Exception:
+            for p in list(game.players.values()):
+                pm_state = await self._probe_private_chat(bot, p.user_id)
+                # None means Telegram/network was temporarily inconclusive. Keep
+                # the player: only a confirmed permanent error can remove them.
+                if pm_state is False:
                     unreachable.append(p)
             if unreachable:
                 names = ", ".join(escape(p.name) for p in unreachable)
                 if not drop_unreachable:
-                    await self._safe_group(bot, game.chat_id, f"⚠️ Не могу начать: откройте ЛС с ботом и нажмите /start — {names}.")
+                    await self._safe_group(
+                        bot, game.chat_id,
+                        f"⚠️ Telegram пока не разрешает боту написать в ЛС: {names}. "
+                        "Если это первая игра — откройте бота один раз и нажмите /start. "
+                        "В следующих партиях повторять это не нужно.",
+                    )
                     return
 
-                # A registration timeout must never hang forever because one
-                # participant never opened the bot PM. Remove only unreachable
-                # registrations and continue when enough reachable players remain.
+                # Only definitely unreachable PMs are removed. Temporary API or
+                # Railway failures never eject a participant from registration.
                 for p in unreachable:
                     game.players.pop(p.user_id, None)
                     if store.user_to_chat.get(p.user_id) == game.chat_id:
@@ -881,14 +922,14 @@ class GameEngine:
                 await self.persist(game)
                 await self._safe_group(
                     bot, game.chat_id,
-                    f"⚠️ Не смог отправить роль: {names}. "
-                    "Эти игроки исключены из текущей регистрации, потому что ЛС с ботом не открыты.",
+                    f"⚠️ {names}: Telegram не разрешает отправить секретную роль в ЛС. "
+                    "Бота нужно открыть один раз; после этого отдельная отметка перед играми не требуется.",
                 )
                 if len(game.players) < min_players:
                     await self.close_registration_ui(bot, game)
                     await self._safe_group(
                         bot, game.chat_id,
-                        f"⏳ Регистрация закрыта. После проверки ЛС осталось {len(game.players)} "
+                        f"⏳ Регистрация закрыта. Доступны для игры {len(game.players)} "
                         f"игрока(ов), а нужно минимум {min_players}.",
                     )
                     await self.storage.delete_game_state(game.chat_id)
@@ -968,7 +1009,16 @@ class GameEngine:
                 text += "\n\n<b>Твои союзники:</b>\n" + "\n".join(
                     f"{player_link(m)} — {role_title(m.role_key)}" for m in teammates
                 )
-            await self._safe_pm(bot, p.user_id, text)
+            # Role delivery is important enough to retry: a single transient
+            # Telegram/Railway error must not leave a valid participant role-less.
+            delivered = None
+            for _ in range(3):
+                delivered = await self._safe_pm(bot, p.user_id, text)
+                if delivered:
+                    break
+                await asyncio.sleep(0)
+            if not delivered:
+                self.log.error("Role delivery failed after retries user=%s chat=%s", p.user_id, game.chat_id)
 
     async def start_night(self, bot: Bot, game: GameState, allow_from_resolving: bool = False) -> None:
         async with self.lock_for(game.chat_id):

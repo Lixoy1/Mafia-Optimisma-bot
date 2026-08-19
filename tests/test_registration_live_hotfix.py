@@ -6,6 +6,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from test_core import FakeBot, FakeStorage, Settings, GameEngine, GameState, Phase, PlayerState, store
+from aiogram.exceptions import TelegramForbiddenError
 from mafia_optimisma import routers_callbacks
 
 
@@ -61,7 +62,7 @@ class RegistrationLiveHotfixTests(unittest.IsolatedAsyncioTestCase):
         class ClosedPmBot(FakeBot):
             async def send_chat_action(self, chat_id, action):
                 if chat_id == 11:
-                    raise RuntimeError('bot cannot initiate PM')
+                    raise RuntimeError('temporary Telegram error')
                 return None
 
         storage = JoinStorage(); bot = ClosedPmBot(); engine = GameEngine(self.settings, storage)
@@ -74,11 +75,37 @@ class RegistrationLiveHotfixTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.user_to_chat.get(11), g.chat_id)
         self.assertTrue(any('повторно' in text for text, _ in cb.answers))
 
-    async def test_timeout_removes_one_closed_pm_and_starts_with_four(self):
+    async def test_temporary_pm_probe_failure_never_ejects_player(self):
+        class TemporaryFailureBot(FakeBot):
+            def __init__(self):
+                super().__init__()
+                self.probes = {}
+            async def send_chat_action(self, chat_id, action):
+                self.probes[chat_id] = self.probes.get(chat_id, 0) + 1
+                if chat_id == 4:
+                    raise RuntimeError('temporary network hiccup')
+                return None
+
+        storage = FakeStorage(); bot = TemporaryFailureBot(); engine = GameEngine(self.settings, storage)
+        g = GameState(8205, 'temporary-pm', mode='classic')
+        store.games[g.chat_id] = g
+        for i in range(1, 5):
+            g.players[i] = PlayerState(i, f'P{i}', number=i)
+            store.remember_user(i, g.chat_id)
+        await engine.begin_registration(bot, g)
+        await asyncio.sleep(0.05)
+        self.assertIs(store.get(g.chat_id), g)
+        self.assertEqual(g.phase, Phase.NIGHT)
+        self.assertEqual(len(g.players), 4)
+        self.assertIn(4, g.players)
+        self.assertGreaterEqual(bot.probes.get(4, 0), 2)
+        engine.cancel_timer(g.chat_id)
+
+    async def test_timeout_removes_one_confirmed_closed_pm_and_starts_with_four(self):
         class OneClosedPmBot(FakeBot):
             async def send_chat_action(self, chat_id, action):
                 if chat_id == 5:
-                    raise RuntimeError('bot cannot initiate PM')
+                    raise TelegramForbiddenError('bot cannot initiate conversation with a user')
                 return None
 
         storage = FakeStorage(); bot = OneClosedPmBot(); engine = GameEngine(self.settings, storage)
@@ -95,11 +122,11 @@ class RegistrationLiveHotfixTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(5, g.players)
         engine.cancel_timer(g.chat_id)
 
-    async def test_timeout_with_too_few_reachable_players_closes_instead_of_hanging(self):
+    async def test_timeout_with_too_few_confirmed_reachable_players_closes_instead_of_hanging(self):
         class OneClosedPmBot(FakeBot):
             async def send_chat_action(self, chat_id, action):
                 if chat_id == 4:
-                    raise RuntimeError('bot cannot initiate PM')
+                    raise TelegramForbiddenError('bot cannot initiate conversation with a user')
                 return None
 
         storage = FakeStorage(); bot = OneClosedPmBot(); engine = GameEngine(self.settings, storage)
