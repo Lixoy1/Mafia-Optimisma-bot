@@ -1,14 +1,18 @@
 import os
+import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 import aiosqlite
 
 from mafia_optimisma.rankings import (
     WEEKLY_MIN_WINS,
     award_previous_week,
-    current_week_bounds,
     full_statistics,
     init_rankings,
     previous_week_bounds,
@@ -50,7 +54,7 @@ class RankingsTests(unittest.IsolatedAsyncioTestCase):
         now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
         _, _, start, end = previous_week_bounds(now)
         self.assertEqual(start.strftime("%d.%m.%Y"), "10.08.2026")
-        self.assertEqual((end - __import__('datetime').timedelta(days=1)).strftime("%d.%m.%Y"), "16.08.2026")
+        self.assertEqual((end - timedelta(days=1)).strftime("%d.%m.%Y"), "16.08.2026")
         self.assertEqual(start.weekday(), 0)
 
     async def test_dense_top3_ties_split_exact_prize_pools_once(self):
@@ -84,7 +88,7 @@ class RankingsTests(unittest.IsolatedAsyncioTestCase):
         async with aiosqlite.connect(self.path) as db:
             async with db.execute("SELECT user_id, money FROM profiles WHERE user_id IN (1,2,3,4,5) ORDER BY user_id") as cur:
                 money_before = dict(await cur.fetchall())
-        self.assertEqual(money_before[1], 350)  # initial 100 + 250
+        self.assertEqual(money_before[1], 350)
         self.assertEqual(money_before[2], 350)
         self.assertEqual(money_before[3], 400)
         self.assertEqual(money_before[4], 200)
@@ -107,7 +111,6 @@ class RankingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_record_game_result_is_idempotent_and_full_stats_are_clear(self):
         for uid, name in ((11, "A"), (12, "B")):
             await self._profile(uid, name)
-        # Profiles hold historical player totals.
         async with aiosqlite.connect(self.path) as db:
             await db.execute("UPDATE profiles SET games=10, wins=6 WHERE user_id=11")
             await db.execute("UPDATE profiles SET games=20, wins=9 WHERE user_id=12")
