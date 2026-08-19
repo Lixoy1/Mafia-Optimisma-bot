@@ -1,4 +1,5 @@
 from pathlib import Path
+import runpy
 
 path = Path("tools/apply_player_experience_upgrade.py")
 text = path.read_text(encoding="utf-8")
@@ -26,4 +27,11 @@ text = text.replace(
 )
 
 path.write_text(text, encoding="utf-8")
+
+# The chat-rules block is intentionally prepared by markers rather than exact
+# prose so copy edits in the admin panel cannot break a future validation run.
+chat_prepare = Path("tools/prepare_chat_controls_builder.py")
+if chat_prepare.exists():
+    runpy.run_path(str(chat_prepare), run_name="__main__")
+
 print("PLAYER EXPERIENCE BUILDER PREPARED")
