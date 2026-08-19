@@ -417,6 +417,12 @@ class GameEngine:
                         self._arm_phase_timer(game, 5, coro_factory)
             except asyncio.CancelledError:
                 return
+            finally:
+                # Do not leave completed timers in the registry. If the phase
+                # transition armed a new timer, preserve that newer task.
+                task = asyncio.current_task()
+                if self.tasks.get(game.chat_id) is task:
+                    self.tasks.pop(game.chat_id, None)
 
         self.tasks[game.chat_id] = asyncio.create_task(runner())
 
@@ -663,7 +669,7 @@ class GameEngine:
                 await self.storage.delete_game_state(game.chat_id)
                 store.remove_game(game.chat_id)
                 return
-        await self.start_game(bot, game)
+        await self.start_game(bot, game, drop_unreachable=True)
 
     async def add_player(self, game: GameState, user_id: int, name: str, username: str | None) -> tuple[bool, str]:
         if game.phase != Phase.REGISTRATION:
@@ -715,7 +721,7 @@ class GameEngine:
         game.day = 0
         game.started_at = game.started_at or time.time()
 
-    async def start_game(self, bot: Bot, game: GameState) -> None:
+    async def start_game(self, bot: Bot, game: GameState, drop_unreachable: bool = False) -> None:
         async with self.lock_for(game.chat_id):
             if store.get(game.chat_id) is not game or game.phase != Phase.REGISTRATION:
                 return
@@ -737,8 +743,33 @@ class GameEngine:
                     unreachable.append(p)
             if unreachable:
                 names = ", ".join(escape(p.name) for p in unreachable)
-                await self._safe_group(bot, game.chat_id, f"⚠️ Не могу начать: откройте ЛС с ботом и нажмите /start — {names}.")
-                return
+                if not drop_unreachable:
+                    await self._safe_group(bot, game.chat_id, f"⚠️ Не могу начать: откройте ЛС с ботом и нажмите /start — {names}.")
+                    return
+
+                # A registration timeout must never hang forever because one
+                # participant never opened the bot PM. Remove only unreachable
+                # registrations and continue when enough reachable players remain.
+                for p in unreachable:
+                    game.players.pop(p.user_id, None)
+                    if store.user_to_chat.get(p.user_id) == game.chat_id:
+                        store.user_to_chat.pop(p.user_id, None)
+                await self.persist(game)
+                await self._safe_group(
+                    bot, game.chat_id,
+                    f"⚠️ Не смог отправить роль: {names}. "
+                    "Эти игроки исключены из текущей регистрации, потому что ЛС с ботом не открыты.",
+                )
+                if len(game.players) < min_players:
+                    await self.close_registration_ui(bot, game)
+                    await self._safe_group(
+                        bot, game.chat_id,
+                        f"⏳ Регистрация закрыта. После проверки ЛС осталось {len(game.players)} "
+                        f"игрока(ов), а нужно минимум {min_players}.",
+                    )
+                    await self.storage.delete_game_state(game.chat_id)
+                    store.remove_game(game.chat_id)
+                    return
 
             # Close registration *logically* in memory before touching Telegram
             # UI. We intentionally do not persist the intermediate RESOLVING state
@@ -755,7 +786,8 @@ class GameEngine:
             await self.persist(game)
 
             task = self.tasks.pop(game.chat_id, None)
-            if task and not task.done():
+            current_task = asyncio.current_task()
+            if task and task is not current_task and not task.done():
                 task.cancel()
             warning = self.warning_tasks.pop(game.chat_id, None)
             if warning and not warning.done():

@@ -83,14 +83,11 @@ async def cb_join(callback: CallbackQuery):
         return
 
     user = callback.from_user
-    # Telegram PM access is checked before taking the game lock; a slow network
-    # request must not block the registration timer for the whole chat.
-    try:
-        await callback.bot.send_chat_action(user.id, "typing")
-    except Exception:
-        await callback.answer("Сначала открой ЛС с ботом и нажми /start.", show_alert=True)
-        return
 
+    # First tap is the registration. Telegram does not allow a bot to initiate
+    # a private conversation, but that must not force the player to return and
+    # press JOIN a second time after /start. Register first, then only use the PM
+    # probe to tell the player whether they need to open the bot before game start.
     async with engine.lock_for(chat_id):
         game = store.get(chat_id)
         if not _fresh_game(game, session) or game.phase != Phase.REGISTRATION:
@@ -99,12 +96,25 @@ async def cb_join(callback: CallbackQuery):
         await engine.storage.remember_chat_user(chat_id, user.id, user.full_name, user.username)
         ok, text = await engine.add_player(game, user.id, user.full_name, user.username)
 
-    await callback.answer("Ты в игре!" if ok else text, show_alert=not ok)
-    if ok:
-        # The pinned registration card is the single source of truth in the
-        # group. Joining edits that card instead of adding chat spam.
-        await engine.update_registration_message(callback.bot, game)
+    if not ok:
+        await callback.answer(text, show_alert=True)
+        return
+
+    await engine.update_registration_message(callback.bot, game)
+    pm_open = True
+    try:
+        await callback.bot.send_chat_action(user.id, "typing")
+    except Exception:
+        pm_open = False
+
+    if pm_open:
+        await callback.answer("Ты в игре!")
         await engine._safe_pm(callback.bot, user.id, "✅ Ты зарегистрирован(а). Роль придёт сюда после старта партии.")
+    else:
+        await callback.answer(
+            "✅ Ты уже зарегистрирован(а). До старта игры открой ЛС с ботом и нажми /start — повторно жать «Присоединиться» не нужно.",
+            show_alert=True,
+        )
 
 @router.callback_query(F.data.startswith("mode:"))
 async def cb_mode(callback: CallbackQuery):
