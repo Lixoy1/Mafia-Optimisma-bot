@@ -14,6 +14,8 @@ from mafia_optimisma.models import GameState, Phase, PlayerState
 
 
 class MutableVerdictTests(unittest.TestCase):
+    """Regression contract for a changeable public verdict vote."""
+
     def test_verdict_keyboard_has_execute_pardon_and_abstain(self):
         game = GameState(-1001, "city", phase=Phase.VERDICT, day=3, session_id="abc123")
         kb = verdict_keyboard(game)
