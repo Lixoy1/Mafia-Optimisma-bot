@@ -105,6 +105,9 @@ async def init_rankings(storage) -> None:
 
 async def record_game_result(storage, game, winner: str) -> None:
     """Persist one completed game exactly once for team statistics."""
+    # Offline core harness has no SQLite connector; production Storage does.
+    if not getattr(storage, "path", None) or not callable(getattr(aiosqlite, "connect", None)):
+        return
     finished = int(game.finished_at or time.time())
     started = int(game.started_at or game.finished_at or time.time())
     async with aiosqlite.connect(storage.path) as db:

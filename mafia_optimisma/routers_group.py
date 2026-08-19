@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from html import escape
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -11,15 +11,110 @@ from .content import GLOBAL, MODES, ROLES
 from .engine import GameEngine, living_summary, pick
 from .keyboards import admin_settings_keyboard, join_keyboard, mode_keyboard
 from .models import Phase
+from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
 from .state import store
 
 router = Router(name="group")
 engine: GameEngine | None = None
+_guard_installed = False
+
+# During a live party only these operational commands may be sent by an admin
+# who is not a living player. Everything else from spectators/dead players is
+# removed by the outer middleware before a command handler can consume it.
+LIVE_ADMIN_COMMANDS = {
+    "settings", "set_mode", "stop", "cancel_reg", "extend",
+    "start", "start_game", "admin_notify",
+}
+
+
+def _command_name(message: Message) -> str | None:
+    text = (getattr(message, "text", None) or "").strip()
+    if not text.startswith("/"):
+        return None
+    token = text.split(maxsplit=1)[0][1:]
+    return token.split("@", 1)[0].lower() or None
+
+
+async def _delete_live_chat_message(message: Message, game, private_text: str) -> None:
+    global engine
+    try:
+        await message.delete()
+    except Exception:
+        # A Telegram bot cannot prevent a message from being sent; it can only
+        # delete it immediately. If the admin permission is missing, make that
+        # visible once per phase instead of silently pretending the guard works.
+        key = f"chat_guard_delete_failed:{game.phase.value}:{game.day}"
+        if not game.temp.get(key):
+            game.temp[key] = True
+            try:
+                await message.bot.send_message(
+                    game.chat_id,
+                    "⚠️ <b>Защита игрового чата не может удалить сообщения.</b>\n"
+                    "Дайте боту права администратора → «Удаление сообщений». "
+                    "После этого зрители и выбывшие будут автоматически блокироваться в чате.",
+                )
+            except Exception:
+                pass
+            if engine is not None:
+                await engine.persist(game)
+        return
+
+    user = getattr(message, "from_user", None)
+    if user:
+        try:
+            await message.bot.send_message(user.id, private_text)
+        except Exception:
+            pass
+
+
+class LiveGameChatGuard(BaseMiddleware):
+    async def __call__(self, handler, event: Message, data):
+        if getattr(getattr(event, "chat", None), "type", None) not in {"group", "supergroup"}:
+            return await handler(event, data)
+
+        game = store.get(event.chat.id)
+        user = getattr(event, "from_user", None)
+        if (
+            not game or not user or getattr(user, "is_bot", False)
+            or game.phase in {Phase.REGISTRATION, Phase.FINISHED}
+        ):
+            return await handler(event, data)
+
+        # Admin operational controls must remain usable even when that admin is
+        # only observing the current party. All other spectator messages/commands
+        # are rejected before ordinary handlers run.
+        command = _command_name(event)
+        if command in LIVE_ADMIN_COMMANDS and await is_chat_admin(event.bot, event.chat.id, user.id):
+            return await handler(event, data)
+
+        player = game.get_player(user.id)
+        if not player or not player.alive:
+            await _delete_live_chat_message(
+                event, game, "❌ Во время партии писать в игровой чат могут только живые участники игры.",
+            )
+            return None
+
+        if game.phase == Phase.NIGHT:
+            await _delete_live_chat_message(event, game, "❌ Ночью город спит — сообщения в группе закрыты.")
+            return None
+
+        if game.phase in {Phase.DISCUSSION, Phase.NOMINATION, Phase.VERDICT, Phase.RESOLVING} and player.silenced:
+            await _delete_live_chat_message(
+                event, game, "❌ Ночная Дива лишила тебя права говорить до конца дня.",
+            )
+            return None
+
+        return await handler(event, data)
 
 
 def setup(game_engine: GameEngine) -> Router:
-    global engine
+    global engine, _guard_installed
     engine = game_engine
+    if not _guard_installed:
+        # Outer middleware runs before filters and command handlers, so a
+        # spectator cannot bypass the game guard with /roles, /stats, etc.
+        router.message.outer_middleware(LiveGameChatGuard())
+        _guard_installed = True
     return router
 
 
@@ -111,20 +206,56 @@ async def set_mode(message: Message):
 
 @router.message(Command("settings"), F.chat.type.in_({"group", "supergroup"}))
 async def settings(message: Message):
-    await remember_sender(message)
-    if not await require_admin(message):
+    assert engine
+    user = message.from_user
+    if not user:
         return
+    await remember_sender(message)
+    is_admin = await is_chat_admin(message.bot, message.chat.id, user.id)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if not is_admin:
+        try:
+            await message.bot.send_message(user.id, "🔐 Настройки этой группы доступны только её владельцу и администраторам.")
+        except Exception:
+            pass
+        return
+
     game = store.get(message.chat.id)
     if game:
-        status = f"Текущий режим: {mode_line(game.mode)}\nФаза: <code>{game.phase.value}</code>\nИгроков: {len(game.players)}"
+        status = (
+            f"🎮 <b>Режим:</b> {mode_line(game.mode)}\n"
+            f"🎬 <b>Состояние:</b> <code>{game.phase.value}</code>\n"
+            f"👥 <b>Игроков:</b> {len(game.players)}"
+        )
     else:
-        status = "Активной регистрации нет. Выбери режим и запусти регистрацию."
-    await message.answer(
-        "⚙️ <b>Админ-панель Mafia Optimisma</b>\n\n"
+        status = "🎬 <b>Состояние:</b> игра/регистрация сейчас не запущена"
+    panel = (
+        "⚙️ <b>Mafia Optimisma · Управление группой</b>\n"
+        f"🏙 <b>Чат:</b> {escape(message.chat.title or 'Игровой чат')}\n\n"
         f"{status}\n\n"
-        "Здесь можно выбрать режим, продлить регистрацию, сделать созыв, посмотреть игроков/статистику или запустить игру.",
-        reply_markup=admin_settings_keyboard(message.chat.id),
+        f"⏱ Регистрация: {engine.settings.registration_seconds} сек. · "
+        f"Ночь: {engine.settings.night_seconds} сек. · "
+        f"День: {engine.settings.discussion_seconds} сек.\n\n"
+        "Выбери действие ниже. Эта панель видна только тебе в ЛС."
     )
+    sent = await engine._safe_pm(
+        message.bot, user.id, panel, reply_markup=admin_settings_keyboard(message.chat.id)
+    )
+    if sent is None:
+        notice = await engine._safe_group(
+            message.bot, message.chat.id,
+            f"⚠️ {escape(user.full_name)}, сначала открой ЛС с ботом и нажми /start, затем повтори /settings."
+        )
+        if notice:
+            async def cleanup():
+                import asyncio
+                await asyncio.sleep(8)
+                await engine._safe_delete(message.bot, message.chat.id, notice.message_id)
+            import asyncio
+            asyncio.create_task(cleanup())
 
 
 @router.message(Command("join"), F.chat.type.in_({"group", "supergroup"}))
@@ -397,15 +528,16 @@ async def reg_call(message: Message):
 async def stats(message: Message):
     assert engine
     await remember_sender(message)
-    rows = await engine.storage.top_profiles(10)
-    if not rows:
-        await message.answer("📊 Статистики пока нет. Сыграйте первую игру.")
-        return
-    lines = ["📊 <b>Топ игроков Mafia Optimisma</b>\n"]
-    for i, row in enumerate(rows, 1):
-        name = escape(row.get("name") or row.get("username") or str(row["user_id"]))
-        lines.append(f"{i}. {name} — 🏆 {row['wins']} / 🎮 {row['games']} | 🌟 {row['level']} | 💵 {row['money']} | 💎 {row['gems']}")
-    await message.answer("\n".join(lines))
+    top, counts, total = await full_statistics(engine.storage, 10)
+    await message.answer(render_full_statistics(top, counts, total))
+
+
+@router.message(Command("week", "weekly", "topweek"), F.chat.type.in_({"group", "supergroup"}))
+async def weekly_stats(message: Message):
+    assert engine
+    await remember_sender(message)
+    rows, start, end = await current_week_leaderboard(engine.storage, 10)
+    await message.answer(render_current_week(rows, start, end))
 
 
 @router.message(F.text.lower().in_({"статистика", "/статистика"}), F.chat.type.in_({"group", "supergroup"}))
@@ -432,8 +564,6 @@ async def group_guard(message: Message):
     # and spectators cannot influence the discussion. Commands are left alone so
     # admins can still use operational controls.
     if not player or not player.alive:
-        if message.text and message.text.startswith("/"):
-            return
         try:
             await message.delete()
         except Exception:

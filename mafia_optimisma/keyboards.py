@@ -193,20 +193,32 @@ def shop_keyboard() -> InlineKeyboardMarkup:
 
 def admin_settings_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏙 Городской оптимизм", callback_data=f"admin:mode:{chat_id}:classic")],
-        [InlineKeyboardButton(text="🌪 Весёлый хаос", callback_data=f"admin:mode:{chat_id}:chaos")],
-        [InlineKeyboardButton(text="🧟 Эпидемия улыбок", callback_data=f"admin:mode:{chat_id}:virus")],
-        [InlineKeyboardButton(text="🌸 Война улыбчивых кланов", callback_data=f"admin:mode:{chat_id}:clans")],
+        [
+            InlineKeyboardButton(text="🎮 Режим игры", callback_data=f"admin:mode_menu:{chat_id}"),
+            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin:refresh:{chat_id}"),
+        ],
         [
             InlineKeyboardButton(text="▶️ Запустить", callback_data=f"admin:start:{chat_id}"),
             InlineKeyboardButton(text="⏱ +30 сек", callback_data=f"admin:extend:{chat_id}"),
         ],
         [
-            InlineKeyboardButton(text="📣 Созыв", callback_data=f"admin:call:{chat_id}"),
             InlineKeyboardButton(text="👥 Игроки", callback_data=f"admin:players:{chat_id}"),
+            InlineKeyboardButton(text="📣 Созыв", callback_data=f"admin:call:{chat_id}"),
         ],
         [
+            InlineKeyboardButton(text="🏆 Неделя", callback_data=f"admin:weekly:{chat_id}"),
             InlineKeyboardButton(text="📊 Статистика", callback_data=f"admin:stats:{chat_id}"),
-            InlineKeyboardButton(text="🚫 Отменить", callback_data=f"admin:cancel:{chat_id}"),
         ],
+        [InlineKeyboardButton(text="🚫 Отменить регистрацию", callback_data=f"admin:cancel:{chat_id}")],
     ])
+
+
+def admin_mode_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    for key, mode in MODES.items():
+        rows.append([InlineKeyboardButton(
+            text=f"{mode['emoji']} {mode['name']}",
+            callback_data=f"admin:mode:{chat_id}:{key}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

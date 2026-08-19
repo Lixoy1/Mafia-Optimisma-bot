@@ -8,8 +8,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .admin import is_chat_admin
 from .content import GLOBAL, ITEMS, MODES, ROLES
 from .engine import GameEngine, living_summary, pick, role_team, role_title
-from .keyboards import admin_settings_keyboard, shop_keyboard
+from .keyboards import admin_mode_keyboard, admin_settings_keyboard, shop_keyboard
 from .models import NightAction, Phase, PlayerState
+from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
 from .protocol import decode_action, encode_action
 from .state import store
 
@@ -564,6 +565,34 @@ async def cb_bomb(callback: CallbackQuery):
     except Exception:
         pass
 
+async def _admin_panel_payload(callback: CallbackQuery, chat_id: int):
+    assert engine
+    game = store.get(chat_id)
+    try:
+        chat = await callback.bot.get_chat(chat_id)
+        title = getattr(chat, "title", None) or "Игровой чат"
+    except Exception:
+        title = "Игровой чат"
+    if game:
+        status = (
+            f"🎮 <b>Режим:</b> {MODES[game.mode]['emoji']} <b>{MODES[game.mode]['name']}</b>\n"
+            f"🎬 <b>Состояние:</b> <code>{game.phase.value}</code>\n"
+            f"👥 <b>Игроков:</b> {len(game.players)}"
+        )
+    else:
+        status = "🎬 <b>Состояние:</b> игра/регистрация сейчас не запущена"
+    text = (
+        "⚙️ <b>Mafia Optimisma · Управление группой</b>\n"
+        f"🏙 <b>Чат:</b> {escape(title)}\n\n"
+        f"{status}\n\n"
+        f"⏱ Регистрация: {engine.settings.registration_seconds} сек. · "
+        f"Ночь: {engine.settings.night_seconds} сек. · "
+        f"День: {engine.settings.discussion_seconds} сек.\n\n"
+        "Выбери действие ниже."
+    )
+    return text, admin_settings_keyboard(chat_id)
+
+
 @router.callback_query(F.data.startswith("admin:"))
 async def cb_admin(callback: CallbackQuery):
     assert engine
@@ -575,6 +604,29 @@ async def cb_admin(callback: CallbackQuery):
         return
     game = store.get(chat_id)
 
+    if action == "refresh":
+        text, markup = await _admin_panel_payload(callback, chat_id)
+        try:
+            await callback.message.edit_text(text, reply_markup=markup)
+        except Exception:
+            await callback.message.answer(text, reply_markup=markup)
+        await callback.answer()
+        return
+
+    if action == "mode_menu":
+        await callback.message.edit_text(
+            "🎮 <b>Режим игры</b>\n\nВыбери режим для текущей регистрации:",
+            reply_markup=admin_mode_keyboard(chat_id),
+        )
+        await callback.answer()
+        return
+
+    if action == "weekly":
+        rows, start, end = await current_week_leaderboard(engine.storage, 10)
+        await callback.message.answer(render_current_week(rows, start, end))
+        await callback.answer()
+        return
+
     if action == "mode":
         mode = parts[3]
         if mode not in MODES:
@@ -583,7 +635,11 @@ async def cb_admin(callback: CallbackQuery):
         async with engine.lock_for(chat_id):
             game = store.get(chat_id)
             if not game:
-                title = callback.message.chat.title if callback.message else "чат"
+                try:
+                    target_chat = await callback.bot.get_chat(chat_id)
+                    title = getattr(target_chat, "title", None) or "чат"
+                except Exception:
+                    title = "чат"
                 game = store.create_or_reset(chat_id, title, mode)
                 await engine.begin_registration(callback.bot, game)
                 update_card = False
@@ -631,22 +687,15 @@ async def cb_admin(callback: CallbackQuery):
                 f"{i}. @{p.username}" if p.username else f"{i}. {escape(p.name)}"
                 for i, p in enumerate(game.players.values(), 1)
             ) or "пока пусто"
-            await callback.bot.send_message(chat_id, f"👥 <b>Игроки:</b>\n{names}\n\nВсего: {len(game.players)}")
+            await callback.message.answer(f"👥 <b>Игроки:</b>\n{names}\n\nВсего: {len(game.players)}")
         else:
-            await callback.bot.send_message(chat_id, living_summary(game))
+            await callback.message.answer(living_summary(game))
         await callback.answer()
         return
 
     if action == "stats":
-        rows = await engine.storage.top_profiles(10)
-        if not rows:
-            await callback.bot.send_message(chat_id, "📊 Статистики пока нет. Сыграйте первую игру.")
-        else:
-            lines = ["📊 <b>Топ игроков Mafia Optimisma</b>\n"]
-            for i, row in enumerate(rows, 1):
-                name = escape(row.get("name") or row.get("username") or str(row["user_id"]))
-                lines.append(f"{i}. {name} — 🏆 {row['wins']} / 🎮 {row['games']} | 🌟 {row['level']}")
-            await callback.bot.send_message(chat_id, "\n".join(lines))
+        top, counts, total = await full_statistics(engine.storage, 10)
+        await callback.message.answer(render_full_statistics(top, counts, total))
         await callback.answer()
         return
 

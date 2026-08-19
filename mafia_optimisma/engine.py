@@ -15,6 +15,7 @@ from .config import Settings
 from .content import GLOBAL, MODES, ROLES, TEAMS, STICKERS
 from .keyboards import night_action_keyboard, vote_keyboard, join_keyboard, open_bot_keyboard
 from .models import GameState, NightAction, Phase, PlayerState
+from .rankings import record_game_result
 from .state import store
 from .storage import Storage
 
@@ -870,13 +871,22 @@ class GameEngine:
             for p in game.alive_players():
                 role = ROLES[p.role_key or "optimist"]
                 kb = night_action_keyboard(game, p)
-                text = random.choice(role.night_prompts)
-                try:
-                    msg = await bot.send_message(p.user_id, text, reply_markup=kb) if kb else await bot.send_message(p.user_id, text)
-                    if kb and msg:
-                        game.night_pm_message_ids[p.user_id] = msg.message_id
-                except Exception:
-                    continue
+                prompt = random.choice(role.night_prompts) if role.night_prompts else "Этой ночью у тебя нет отдельного действия."
+                if kb:
+                    text = prompt
+                else:
+                    # Passive roles still receive a fresh role reminder every night.
+                    # This also makes the PM useful when the user opens it via the
+                    # group's «Перейти в бота» button on Night 2+.
+                    text = (
+                        f"🌙 <b>Ночной цикл №{game.day}</b>\n"
+                        f"Ты — <b>{role.title}</b>.\n\n"
+                        "💤 У тебя нет ночного действия. Отдыхай и жди утра.\n"
+                        f"{escape(prompt)}"
+                    )
+                msg = await self._safe_pm(bot, p.user_id, text, reply_markup=kb)
+                if kb and msg:
+                    game.night_pm_message_ids[p.user_id] = msg.message_id
 
             # A lynched Подрывник takes revenge during the following ordinary NIGHT,
             # not in a separate 20-second pseudo-phase. His one revenge control is
@@ -1805,6 +1815,19 @@ class GameEngine:
                 await self.storage.save_game_state(game)
             except Exception:
                 self.log.exception("Could not retain unfinished finalisation chat=%s", game.chat_id)
+            return False
+
+        # Ranking history is part of finalisation too. If this tiny idempotent
+        # write fails, keep the FINISHED snapshot so the retry can restore it;
+        # otherwise weekly/team statistics could silently lose a completed game.
+        try:
+            await record_game_result(self.storage, game, winner)
+        except Exception:
+            self.log.exception("Could not record game result chat=%s session=%s", game.chat_id, game.session_id)
+            try:
+                await self.storage.save_game_state(game)
+            except Exception:
+                pass
             return False
 
         try:
