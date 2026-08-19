@@ -145,11 +145,14 @@ def night_action_keyboard(game: GameState, player: PlayerState) -> InlineKeyboar
 
 def vote_keyboard(game: GameState, voter_id: int) -> InlineKeyboardMarkup:
     buttons = []
+    cfg = game.temp.get("_chat_settings", {})
+    show_numbers = bool(cfg.get("vote_show_numbers", True)) if isinstance(cfg, dict) else True
     for p in game.alive_players():
         if p.user_id == voter_id:
             continue
+        label = f"№{p.number:02d} · {p.name[:22]}" if show_numbers and p.number else p.name[:28]
         buttons.append(InlineKeyboardButton(
-            text=p.name[:28],
+            text=label,
             callback_data=f"vote:{game.session_id}:{game.chat_id}:{game.day}:{p.user_id}",
         ))
     rows = chunk_buttons(buttons, 2)
@@ -196,6 +199,34 @@ def shop_keyboard() -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=f"{item['emoji']} {item['name']} — {' + '.join(price)}", callback_data=f"shop:{key}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def post_game_keyboard(chat_id: int, notify_state: bool | None = None) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(text="👤 Профиль", callback_data="pm:profile"),
+        InlineKeyboardButton(text="📊 Моя статистика", callback_data="pm:stats"),
+    ]]
+    if notify_state is True:
+        rows.append([InlineKeyboardButton(
+            text="🔕 Не звать на следующую игру",
+            callback_data=f"notify:set:{chat_id}:0",
+        )])
+    elif notify_state is False:
+        rows.append([InlineKeyboardButton(
+            text="🔔 Позвать на следующую игру",
+            callback_data=f"notify:set:{chat_id}:1",
+        )])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="🔔 Позвать на следующую",
+                callback_data=f"notify:set:{chat_id}:1",
+            ),
+            InlineKeyboardButton(
+                text="🔕 Не звать",
+                callback_data=f"notify:set:{chat_id}:0",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 CONFIGURABLE_ROLE_KEYS = [
     "surgeon", "tracker", "fatalist", "wanderer", "night_diva", "breacher",
@@ -299,6 +330,24 @@ def admin_time_values_keyboard(chat_id: int, field: str, selected: int) -> Inlin
     rows.append([InlineKeyboardButton(text="⬅️ К таймингам", callback_data=f"admin:timings:{chat_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def admin_chat_rules_keyboard(chat_id: int, values: dict | None = None) -> InlineKeyboardMarkup:
+    values = values or {}
+    options = [
+        ("block_profanity", "🤬 Запретить мат", False),
+        ("block_stickers", "🖼 Запретить стикеры", False),
+        ("block_links", "🔗 Запретить ссылки", False),
+        ("vote_show_numbers", "🔢 № + имя в голосовании", True),
+    ]
+    rows = []
+    for key, label, default in options:
+        enabled = bool(values.get(key, default))
+        rows.append([InlineKeyboardButton(
+            text=f"{'✅' if enabled else '⬜'} {label}",
+            callback_data=f"admin:chat_toggle:{chat_id}:{key}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def admin_misc_keyboard(chat_id: int, protect: bool, early: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

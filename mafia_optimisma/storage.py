@@ -144,11 +144,14 @@ class Storage:
         item = ITEMS[item_key]
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
             row = await self._fetch_profile_row(db, user_id)
             if not row:
+                await db.commit()
                 return False, "Сначала напиши /start боту в ЛС."
             p = self._row_to_profile(row)
             if p["money"] < item["money"] or p["gems"] < item["gems"]:
+                await db.commit()
                 return False, "Не хватает валюты."
             items = p["items"]
             items[item_key] = items.get(item_key, 0) + 1
@@ -157,17 +160,20 @@ class Storage:
                 (p["money"] - item["money"], p["gems"] - item["gems"], json.dumps(items, ensure_ascii=False), user_id),
             )
             await db.commit()
-            return True, f"Куплено: {item['emoji']} {item['name']}"
+            return True, f"✅ Куплено: {item['emoji']} {item['name']}"
 
     async def consume_item(self, user_id: int, item_key: str) -> bool:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT items FROM profiles WHERE user_id = ?", (user_id,)) as cur:
                 row = await cur.fetchone()
             if not row:
+                await db.commit()
                 return False
             items = json.loads(row["items"] or "{}")
             if items.get(item_key, 0) <= 0:
+                await db.commit()
                 return False
             items[item_key] -= 1
             await db.execute("UPDATE profiles SET items = ? WHERE user_id = ?", (json.dumps(items, ensure_ascii=False), user_id))
@@ -367,6 +373,28 @@ class Storage:
             ) as cur:
                 rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    async def set_notify_enabled(
+        self, chat_id: int, user_id: int, enabled: bool,
+        name: str | None = None, username: str | None = None,
+    ) -> bool:
+        value = 1 if enabled else 0
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO chat_users
+                    (chat_id, user_id, username, name, call_enabled, notify_enabled, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                    username = COALESCE(excluded.username, chat_users.username),
+                    name = COALESCE(excluded.name, chat_users.name),
+                    notify_enabled = excluded.notify_enabled,
+                    updated_at = strftime('%s','now')
+                """,
+                (chat_id, user_id, username, name or str(user_id), value),
+            )
+            await db.commit()
+        return bool(value)
 
     async def toggle_notify(self, chat_id: int, user_id: int, name: str, username: str | None) -> bool:
         async with aiosqlite.connect(self.path) as db:

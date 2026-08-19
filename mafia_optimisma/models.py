@@ -165,6 +165,11 @@ class GameState:
                 safe_temp[key] = value
             elif isinstance(value, list) and all(isinstance(x, (str, int, float, bool, type(None))) for x in value):
                 safe_temp[key] = value
+            elif key == "_chat_settings" and isinstance(value, dict):
+                # Per-game admin rules are already JSON-backed settings. Keep the
+                # snapshot with the game so a Railway restart cannot silently
+                # change moderation, timing or voting UI mid-party.
+                safe_temp[key] = value
 
         return {
             "chat_id": self.chat_id,
