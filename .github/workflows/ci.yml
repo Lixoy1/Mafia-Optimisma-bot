@@ -2,7 +2,7 @@ name: Mafia Optimisma CI
 
 on:
   push:
-    branches: [main, v3-test, round-polish-settings]
+    branches: [main, v3-test, round-polish-settings, verdict-chat-fix]
   pull_request:
     branches: [main]
 
@@ -30,6 +30,7 @@ jobs:
       - run: python tests/test_optimist_ui_hotfix.py
       - run: python tests/test_round_polish_core.py
       - run: python tests/test_admin_game_settings.py
+      - run: python tests/test_public_verdict_hotfix.py
       - run: python tests/test_role_matrix.py
       - run: python tests/test_role_distribution.py
       - run: python tests/test_protocol.py

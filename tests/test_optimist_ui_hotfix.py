@@ -65,12 +65,14 @@ class OptimistUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('tg://user?id=3', text)
         self.assertTrue(game.players[3].alive)
 
-    def test_callback_source_deletes_vote_cards_immediately_after_choice(self):
+    def test_nomination_is_private_but_verdict_card_is_shared(self):
         source = (ROOT / "mafia_optimisma" / "routers_callbacks.py").read_text(encoding="utf-8")
         self.assertIn("game.nomination_pm_message_ids.pop(voter.user_id, None)", source)
         self.assertIn("nomination_prompt_id or getattr(callback.message, \"message_id\", None)", source)
-        self.assertIn("game.verdict_pm_message_ids.pop(voter.user_id, None)", source)
-        self.assertIn("verdict_prompt_id or getattr(callback.message, \"message_id\", None)", source)
+        verdict_section = source.split('@router.callback_query(F.data.startswith("verdict:"))', 1)[1]
+        verdict_section = verdict_section.split('@router.callback_query(F.data.startswith("bomb:"))', 1)[0]
+        self.assertNotIn("game.verdict_pm_message_ids.pop", verdict_section)
+        self.assertNotIn("engine._safe_delete", verdict_section)
 
     def test_rankings_render_clickable_profile_links(self):
         source = (ROOT / "mafia_optimisma" / "rankings.py").read_text(encoding="utf-8")
