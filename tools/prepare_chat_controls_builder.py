@@ -110,6 +110,18 @@ if builder_path.exists():
         'ху(?:й|я|е|ё|и)[а-яё]*',
     )
 
+    # The moderation source is emitted from a raw triple-quoted migration block.
+    # Therefore regex escapes must appear once in that raw block. Otherwise the
+    # generated regex searches for a literal backslash and misses t.me links.
+    builder = builder.replace(
+        r'''r"(?iu)(?:https?://|www\\.|t\\.me/|telegram\\.me/|"''',
+        r'''r"(?iu)(?:https?://|www\.|t\.me/|telegram\.me/|"''',
+    )
+    builder = builder.replace(
+        r'''r"(?<![\\w@])(?:[a-z0-9-]+\\.)+(?:com|ru|net|org|io|gg|me|app|dev|nl|de)(?:/|\\b))"''',
+        r'''r"(?<![\w@])(?:[a-z0-9-]+\.)+(?:com|ru|net|org|io|gg|me|app|dev|nl|de)(?:/|\b))"''',
+    )
+
     # This builder emits Python source. Keep escape sequences such as \\n literal
     # in the generated files instead of interpreting them inside the migration
     # script itself. Only raw-prefix opening replacement literals; closing triple
