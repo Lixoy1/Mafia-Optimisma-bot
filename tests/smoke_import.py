@@ -18,6 +18,7 @@ class Router:
         return lambda fn: fn
 
 aiogram = types.ModuleType('aiogram')
+aiogram.BaseMiddleware = type('BaseMiddleware', (), {})
 aiogram.Bot = type('Bot', (), {})
 aiogram.Dispatcher = type('Dispatcher', (), {})
 aiogram.Router = Router
@@ -43,7 +44,11 @@ exc.TelegramBadRequest = type('TelegramBadRequest', (Exception,), {})
 sys.modules['aiogram.exceptions'] = exc
 
 t = types.ModuleType('aiogram.types')
-for name in ['Message','CallbackQuery','InlineKeyboardButton','InlineKeyboardMarkup','BotCommand','BotCommandScopeAllGroupChats','BotCommandScopeAllPrivateChats']:
+for name in [
+    'Message','CallbackQuery','InlineKeyboardButton','InlineKeyboardMarkup','BotCommand',
+    'BotCommandScopeAllGroupChats','BotCommandScopeAllPrivateChats',
+    'BotCommandScopeAllChatAdministrators',
+]:
     setattr(t, name, type(name, (), {'__init__': lambda self,*a,**k: setattr(self,'__dict__',k)}))
 sys.modules['aiogram.types'] = t
 
