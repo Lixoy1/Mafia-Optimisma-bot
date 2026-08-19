@@ -83,6 +83,17 @@ class RoundPolishCoreTests(unittest.TestCase):
             ["carleone", "surgeon", "optimist", "optimist"],
         )
 
+    def test_winner_preview_is_pure(self):
+        game = GameState(700, "preview", mode="classic", phase=Phase.NIGHT, day=2)
+        game.players = {
+            1: PlayerState(1, "Don", number=1, role_key="carleone", alive=True),
+            2: PlayerState(2, "Town", number=2, role_key="optimist", alive=True),
+        }
+        self.assertEqual(self.engine._detect_winner_state(game), "mafia")
+        self.assertEqual(game.phase, Phase.NIGHT)
+        self.assertTrue(game.players[1].alive)
+        self.assertTrue(game.players[2].alive)
+
     def test_winning_night_does_not_announce_fake_new_day(self):
         bot = FakeBot()
         game = GameState(702, "live", mode="classic", phase=Phase.NIGHT, day=2, started_at=time.time())
