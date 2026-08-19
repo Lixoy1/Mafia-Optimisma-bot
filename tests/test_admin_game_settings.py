@@ -51,9 +51,12 @@ class AdminGameSettingsTests(unittest.TestCase):
         game = GameState(801, "cfg")
         game.temp["_chat_settings"] = {"night_seconds": 27}
         self.assertEqual(self.engine._duration(game, "night_seconds", 60), 27)
-        # Bad values are clamped, so an admin cannot accidentally create a zero timer.
+        # The admin UI never writes values below 15 sec, but the engine preserves
+        # tiny positive durations so resilience tests can run phases in milliseconds.
         game.temp["_chat_settings"]["night_seconds"] = 0
-        self.assertEqual(self.engine._duration(game, "night_seconds", 60), 5)
+        self.assertEqual(self.engine._duration(game, "night_seconds", 60), 0.01)
+        game.temp["_chat_settings"]["night_seconds"] = 0.03
+        self.assertEqual(self.engine._duration(game, "night_seconds", 60), 0.03)
 
     def test_protected_private_content_flag_is_applied(self):
         bot = FakeBot()
