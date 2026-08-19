@@ -1710,7 +1710,8 @@ class GameEngine:
                     game.chat_id,
                     f"⚖️ <b>Город решает судьбу</b> {player_link(candidate)}\n"
                     f"До конца решения — {self._seconds_text(verdict_seconds)} секунд.\n\n"
-                    "👍 Казнить или 👎 Помиловать?",
+                    "👍 Казнить · 👎 Помиловать · 🤍 Воздержаться\n"
+                    "<i>Решение можно менять до конца таймера — учитывается последний выбор.</i>",
                     reply_markup=verdict_keyboard(game),
                 )
                 if msg:
@@ -1733,17 +1734,20 @@ class GameEngine:
             game.verdict_message_id = None
             candidate = game.get_player(game.nominated_id or 0)
 
-            yes_voters = [uid for uid, value in game.verdict_votes.items() if value]
-            no_voters = [uid for uid, value in game.verdict_votes.items() if not value]
+            yes_voters = [uid for uid, value in game.verdict_votes.items() if value is True]
+            no_voters = [uid for uid, value in game.verdict_votes.items() if value is False]
+            abstain_voters = [uid for uid, value in game.verdict_votes.items() if value is None]
             yes_names = "\n".join(f"• {player_link(game.get_player(uid))}" for uid in yes_voters if game.get_player(uid)) or "• —"
             no_names = "\n".join(f"• {player_link(game.get_player(uid))}" for uid in no_voters if game.get_player(uid)) or "• —"
+            abstain_names = "\n".join(f"• {player_link(game.get_player(uid))}" for uid in abstain_voters if game.get_player(uid)) or "• —"
             await self._safe_group(
                 bot,
                 game.chat_id,
                 "⚖️ <b>Вердикт города</b>\n"
                 "━━━━━━━━━━━━\n"
                 f"👍 <b>За казнь — {len(yes_voters)}</b>\n{yes_names}\n\n"
-                f"👎 <b>За помилование — {len(no_voters)}</b>\n{no_names}",
+                f"👎 <b>За помилование — {len(no_voters)}</b>\n{no_names}\n\n"
+                f"🤍 <b>Воздержались — {len(abstain_voters)}</b>\n{abstain_names}",
             )
 
             executed = bool(candidate and candidate.alive and len(yes_voters) > len(no_voters) and len(yes_voters) > 0)

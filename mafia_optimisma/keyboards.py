@@ -161,16 +161,22 @@ def vote_keyboard(game: GameState, voter_id: int) -> InlineKeyboardMarkup:
 
 
 def verdict_keyboard(game: GameState) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="👍 Казнить",
-            callback_data=f"verdict:{game.session_id}:{game.chat_id}:{game.day}:yes",
-        ),
-        InlineKeyboardButton(
-            text="👎 Помиловать",
-            callback_data=f"verdict:{game.session_id}:{game.chat_id}:{game.day}:no",
-        ),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="👍 Казнить",
+                callback_data=f"verdict:{game.session_id}:{game.chat_id}:{game.day}:yes",
+            ),
+            InlineKeyboardButton(
+                text="👎 Помиловать",
+                callback_data=f"verdict:{game.session_id}:{game.chat_id}:{game.day}:no",
+            ),
+        ],
+        [InlineKeyboardButton(
+            text="🤍 Воздержаться",
+            callback_data=f"verdict:{game.session_id}:{game.chat_id}:{game.day}:abstain",
+        )],
+    ])
 
 
 def shop_keyboard() -> InlineKeyboardMarkup:

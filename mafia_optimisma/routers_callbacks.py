@@ -523,16 +523,22 @@ async def cb_verdict(callback: CallbackQuery):
         if voter.user_id == candidate.user_id:
             await callback.answer("Обвиняемый не голосует за собственный приговор.", show_alert=True)
             return
-        if voter.user_id in game.verdict_votes:
-            await callback.answer("Твой голос уже принят.", show_alert=True)
-            return
-        if value not in {"yes", "no"}:
+        if value not in {"yes", "no", "abstain"}:
             await callback.answer("Неизвестный вариант.", show_alert=True)
             return
-        game.verdict_votes[voter.user_id] = value == "yes"
+        had_previous = voter.user_id in game.verdict_votes
+        previous = game.verdict_votes.get(voter.user_id)
+        current = {"yes": True, "no": False, "abstain": None}[value]
+        game.verdict_votes[voter.user_id] = current
         await engine.persist(game)
 
-    await callback.answer("👍 За казнь" if value == "yes" else "👎 За помилование")
+    label = {"yes": "👍 Казнить", "no": "👎 Помиловать", "abstain": "🤍 Воздержаться"}[value]
+    if had_previous and previous != current:
+        await callback.answer(f"Решение изменено: {label}")
+    elif had_previous:
+        await callback.answer(f"Твой выбор уже: {label}")
+    else:
+        await callback.answer(f"Выбор принят: {label}")
 
 @router.callback_query(F.data.startswith("bomb:"))
 async def cb_bomb(callback: CallbackQuery):
