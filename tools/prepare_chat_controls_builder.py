@@ -53,9 +53,9 @@ if 'if action == "chat_toggle":' not in text:
     text = text[:i] + new + "\n" + text[j:]
     path.write_text(text, encoding="utf-8")
 
-# The second migration also contains a legacy exact-text replacement for this
-# same block. Make that call safely idempotent once the semantic preparer has
-# already installed chat_toggle. Keep all other missing markers strict.
+# The second migration also contains some legacy exact-text replacements. Make
+# those calls idempotent where the semantic preparer has already installed the
+# target behavior, while keeping every unrelated missing marker strict.
 builder_path = Path("tools/apply_chat_controls_and_items.py")
 if builder_path.exists():
     builder = builder_path.read_text(encoding="utf-8")
@@ -65,6 +65,14 @@ if builder_path.exists():
         if old_helper not in builder:
             raise RuntimeError("chat-controls replace_once helper marker not found")
         builder = builder.replace(old_helper, new_helper, 1)
+
+    # Player Experience deliberately generalized the silence message from Diva to
+    # any blocking effect. Make the later moderation migration expect that real
+    # post-UX wording instead of the old Diva-only copy.
+    builder = builder.replace(
+        'event, game, "❌ Ночная Дива лишила тебя права говорить до конца дня.",',
+        'event, game, "🤐 Ночной эффект лишил тебя права говорить и голосовать до конца дня.",',
+    )
 
     # Avoid false positives such as «хулиган». The common obscene roots are still
     # caught (e.g. «охуенно», «нахуй», etc.) without treating «хули-» as a root.
