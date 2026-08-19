@@ -232,14 +232,20 @@ async def settings(message: Message):
         )
     else:
         status = "🎬 <b>Состояние:</b> игра/регистрация сейчас не запущена"
+    try:
+        cfg = await engine.storage.get_chat_settings(message.chat.id)
+    except Exception:
+        cfg = {}
+    reg = int(cfg.get("registration_seconds", engine.settings.registration_seconds))
+    night = int(cfg.get("night_seconds", engine.settings.night_seconds))
+    day = int(cfg.get("discussion_seconds", engine.settings.discussion_seconds))
     panel = (
-        "⚙️ <b>Mafia Optimisma · Управление группой</b>\n"
+        "⚙️ <b>Mafia Optimisma · Настройки</b>\n"
         f"🏙 <b>Чат:</b> {escape(message.chat.title or 'Игровой чат')}\n\n"
         f"{status}\n\n"
-        f"⏱ Регистрация: {engine.settings.registration_seconds} сек. · "
-        f"Ночь: {engine.settings.night_seconds} сек. · "
-        f"День: {engine.settings.discussion_seconds} сек.\n\n"
-        "Выбери действие ниже. Эта панель видна только тебе в ЛС."
+        f"⏱ Следующая игра: регистрация {reg}с · ночь {night}с · день {day}с\n\n"
+        "ℹ️ Настройки, изменённые во время партии, применяются только к следующей игре.\n\n"
+        "Выбери раздел ниже. Эта панель видна только администраторам в ЛС."
     )
     sent = await engine._safe_pm(
         message.bot, user.id, panel, reply_markup=admin_settings_keyboard(message.chat.id)
