@@ -2,12 +2,12 @@ name: Mafia Optimisma CI
 
 on:
   push:
-    branches: [main, v3-test, round-polish-settings, verdict-chat-fix]
+    branches: [main, v3-test, round-polish-settings, verdict-chat-fix, player-experience-upgrade]
   pull_request:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -19,6 +19,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      - run: python tools/apply_player_experience_upgrade.py
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q mafia_optimisma tests run.py
       - run: python tests/test_core.py
@@ -33,6 +34,7 @@ jobs:
       - run: python tests/test_public_verdict_hotfix.py
       - run: python tests/test_mutable_verdict_hotfix.py
       - run: python tests/test_first_time_onboarding.py
+      - run: python tests/test_player_experience.py
       - run: python tests/test_role_matrix.py
       - run: python tests/test_role_distribution.py
       - run: python tests/test_protocol.py
@@ -42,3 +44,15 @@ jobs:
       - run: python tests/simulate_games.py
       - run: python tests/fuzz_restart.py
       - run: python tests/fuzz_role_interactions.py
+      - name: Publish verified player experience upgrade
+        if: github.event_name == 'push' && github.ref == 'refs/heads/player-experience-upgrade'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mafia_optimisma/engine.py mafia_optimisma/keyboards.py mafia_optimisma/storage.py mafia_optimisma/routers_callbacks.py mafia_optimisma/routers_private.py mafia_optimisma/routers_group.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Upgrade player onboarding, death flow and final cards'
+            git push origin HEAD:player-experience-upgrade
+          fi
