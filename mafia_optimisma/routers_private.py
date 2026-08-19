@@ -28,15 +28,60 @@ async def start_pm(message: Message, command: CommandObject):
     if not user:
         return
     await engine.storage.ensure_profile(user.id, user.full_name, user.username)
+
+    linked_game = None
+    args = (command.args or "").strip()
+    if args.startswith("join_"):
+        try:
+            _, session, chat_raw = args.split("_", 2)
+            candidate = store.get(int(chat_raw))
+            if (
+                candidate
+                and candidate.session_id == session
+                and candidate.phase == Phase.REGISTRATION
+                and candidate.get_player(user.id)
+            ):
+                linked_game = candidate
+        except (ValueError, AttributeError):
+            linked_game = None
+    if linked_game is None:
+        candidate = store.game_by_user(user.id)
+        if candidate and candidate.phase == Phase.REGISTRATION and candidate.get_player(user.id):
+            linked_game = candidate
+
+    if linked_game is not None:
+        async with engine.lock_for(linked_game.chat_id):
+            pending = {
+                int(uid) for uid in (linked_game.temp.get("_pending_pm_activation") or [])
+                if str(uid).lstrip("-").isdigit()
+            }
+            pending.discard(user.id)
+            linked_game.temp["_pending_pm_activation"] = sorted(pending)
+            prompts = dict(linked_game.temp.get("_activation_prompt_ids") or {})
+            prompt_id = prompts.pop(str(user.id), None)
+            linked_game.temp["_activation_prompt_ids"] = prompts
+            await engine.persist(linked_game)
+        if prompt_id:
+            try:
+                await engine._safe_delete(message.bot, linked_game.chat_id, int(prompt_id))
+            except (TypeError, ValueError):
+                pass
+        await engine.update_registration_message(message.bot, linked_game)
+        await message.answer(
+            "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n\n"
+            "✅ Личный игровой канал активирован.\n"
+            f"🎭 Твоё место в игре «{linked_game.chat_title}» закреплено.\n\n"
+            "Теперь просто возвращайся в группу и жди старта — повторно нажимать "
+            "«Присоединиться» не нужно. В следующих партиях достаточно одного JOIN 😎"
+        )
+        return
+
     await message.answer(
-        "🎲 <b>Mafia Optimisma</b>\n"
-        "Даже в мафии есть место оптимизму!\n\n"
-        "Команды:\n"
-        "/menu — меню\n"
-        "/profile — профиль\n"
-        "/shop — магазин\n"
-        "/roles — роли\n\n"
-        "Чтобы войти в игру, нажми кнопку «Присоединиться» в групповом чате."
+        "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n"
+        "Даже в мафии есть место оптимизму 😎\n\n"
+        "Личный канал готов: сюда будут приходить роли и ночные действия.\n"
+        "Теперь найди регистрацию в игровом чате и нажми «➕ Присоединиться».\n\n"
+        "Команды: /menu · /profile · /shop · /roles"
     )
 
 

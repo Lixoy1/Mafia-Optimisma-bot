@@ -105,21 +105,64 @@ async def cb_join(callback: CallbackQuery):
         await callback.answer(text, show_alert=True)
         return
 
-    await engine.update_registration_message(callback.bot, game)
-    pm_open = True
-    try:
-        await callback.bot.send_chat_action(user.id, "typing")
-    except Exception:
-        pm_open = False
+    pm_state = await engine._probe_private_chat(callback.bot, user.id)
+    if pm_state is False:
+        pending = {
+            int(uid) for uid in (game.temp.get("_pending_pm_activation") or [])
+            if str(uid).lstrip("-").isdigit()
+        }
+        pending.add(user.id)
+        game.temp["_pending_pm_activation"] = sorted(pending)
+        await engine.persist(game)
+        await engine.update_registration_message(callback.bot, game)
 
-    if pm_open:
-        await callback.answer("Ты в игре!")
-        await engine._safe_pm(callback.bot, user.id, "✅ Ты зарегистрирован(а). Роль придёт сюда после старта партии.")
-    else:
+        username = None
+        try:
+            username = (await callback.bot.get_me()).username
+        except Exception:
+            pass
+        markup = None
+        if username:
+            payload = f"join_{game.session_id}_{game.chat_id}"
+            markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text="🚀 Открыть бота → START",
+                url=f"https://t.me/{username}?start={payload}",
+            )]])
+        player = game.get_player(user.id)
+        prompt = await engine._safe_group(
+            callback.bot,
+            game.chat_id,
+            "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n\n"
+            f"{player_link(player) if player else escape(user.full_name)}, твоё место уже забронировано 🔐\n"
+            "Это первый вход. Нажми кнопку ниже, в открывшемся ЛС нажми <b>START</b> — "
+            "и место подтвердится автоматически.\n\n"
+            "<i>Повторно «Присоединиться» нажимать не нужно. В следующих играх этого шага уже не будет.</i>",
+            reply_markup=markup,
+        )
+        if prompt:
+            prompts = dict(game.temp.get("_activation_prompt_ids") or {})
+            prompts[str(user.id)] = prompt.message_id
+            game.temp["_activation_prompt_ids"] = prompts
+            await engine.persist(game)
         await callback.answer(
-            "✅ Ты уже зарегистрирован(а). До старта игры открой ЛС с ботом и нажми /start — повторно жать «Присоединиться» не нужно.",
+            "✅ Ты уже в списке. Для первой игры осталось одно касание: открой бота по кнопке и нажми START.",
             show_alert=True,
         )
+    else:
+        # Reachable or temporarily uncertain: registration remains valid. Only a
+        # confirmed Telegram permission error may request first-time activation.
+        pending = {
+            int(uid) for uid in (game.temp.get("_pending_pm_activation") or [])
+            if str(uid).lstrip("-").isdigit()
+        }
+        if user.id in pending:
+            pending.discard(user.id)
+            game.temp["_pending_pm_activation"] = sorted(pending)
+            await engine.persist(game)
+        await engine.update_registration_message(callback.bot, game)
+        await callback.answer("Ты в игре!")
+        if pm_state is True:
+            await engine._safe_pm(callback.bot, user.id, "✅ Ты зарегистрирован(а). Роль придёт сюда после старта партии.")
 
 @router.callback_query(F.data.startswith("mode:"))
 async def cb_mode(callback: CallbackQuery):

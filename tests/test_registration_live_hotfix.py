@@ -58,14 +58,14 @@ class RegistrationLiveHotfixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(g.registration_message_id)
         engine.cancel_timer(g.chat_id)
 
-    async def test_first_join_is_kept_when_private_chat_is_closed(self):
-        class ClosedPmBot(FakeBot):
+    async def test_first_join_is_kept_on_temporary_pm_failure(self):
+        class TemporaryPmBot(FakeBot):
             async def send_chat_action(self, chat_id, action):
                 if chat_id == 11:
                     raise RuntimeError('temporary Telegram error')
                 return None
 
-        storage = JoinStorage(); bot = ClosedPmBot(); engine = GameEngine(self.settings, storage)
+        storage = JoinStorage(); bot = TemporaryPmBot(); engine = GameEngine(self.settings, storage)
         routers_callbacks.setup(engine)
         g = GameState(8202, 'join', mode='classic', phase=Phase.REGISTRATION)
         store.games[g.chat_id] = g
@@ -73,7 +73,8 @@ class RegistrationLiveHotfixTests(unittest.IsolatedAsyncioTestCase):
         await routers_callbacks.cb_join(cb)
         self.assertIn(11, g.players)
         self.assertEqual(store.user_to_chat.get(11), g.chat_id)
-        self.assertTrue(any('повторно' in text for text, _ in cb.answers))
+        self.assertTrue(any(text == 'Ты в игре!' for text, _ in cb.answers))
+        self.assertNotIn(11, g.temp.get('_pending_pm_activation', []))
 
     async def test_temporary_pm_probe_failure_never_ejects_player(self):
         class TemporaryFailureBot(FakeBot):

@@ -2268,15 +2268,24 @@ class GameEngine:
             "",
             "👥 <b>Зарегистрированы:</b>",
         ]
+        pending_activation = {
+            int(uid) for uid in (game.temp.get("_pending_pm_activation") or [])
+            if str(uid).lstrip("-").isdigit()
+        }
         if game.players:
             for p in sorted(game.players.values(), key=lambda x: (x.number or 10**9, x.user_id)):
-                tag = f"@{p.username}" if p.username else escape(p.name)
-                lines.append(f"{p.number}) {tag}")
+                suffix = "  🔐 <i>первый вход</i>" if p.user_id in pending_activation else ""
+                lines.append(f"{p.number}) {player_link(p)}{suffix}")
         else:
             lines.append("— пока никого")
+        ready_count = max(0, len(game.players) - len(pending_activation))
         lines += [
             "",
-            f"👤 Всего: <b>{len(game.players)}</b>",
+            f"👤 Всего: <b>{len(game.players)}</b> · ✅ Готовы: <b>{ready_count}</b>",
+        ]
+        if pending_activation:
+            lines.append(f"🔐 Первый вход в бота: <b>{len(pending_activation)}</b>")
+        lines += [
             f"Минимум для старта: <b>{MODES[game.mode]['min_players']}</b>",
             "",
             "Нажми кнопку ниже, чтобы войти в игру.",
@@ -2330,6 +2339,13 @@ class GameEngine:
         await self._safe_unpin(bot, game.chat_id, message_id)
         await self._safe_delete(bot, game.chat_id, game.registration_warning_id)
         await self._safe_delete(bot, game.chat_id, message_id)
+        for prompt_id in (game.temp.get("_activation_prompt_ids") or {}).values():
+            try:
+                await self._safe_delete(bot, game.chat_id, int(prompt_id))
+            except (TypeError, ValueError):
+                pass
+        game.temp.pop("_activation_prompt_ids", None)
+        game.temp.pop("_pending_pm_activation", None)
         game.registration_message_id = None
         game.registration_warning_id = None
         game.pinned_message_id = None
