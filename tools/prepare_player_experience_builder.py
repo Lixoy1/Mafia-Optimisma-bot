@@ -17,5 +17,13 @@ markers = [
 for marker in markers:
     text = text.replace(marker, marker.replace("'''", "r'''", 1))
 
+# Preserve the useful onboarding promise from the previous release: once START
+# confirms the reserved place, the player never has to return and press JOIN a
+# second time for that registration.
+text = text.replace(
+    '"Место закреплено. Возвращайся в город — роль придёт сюда после старта 😎"',
+    '"Место закреплено. Возвращайся в город — роль придёт сюда после старта 😎\\n"\n                    "Повторно нажимать «Присоединиться» не нужно."',
+)
+
 path.write_text(text, encoding="utf-8")
 print("PLAYER EXPERIENCE BUILDER PREPARED")
