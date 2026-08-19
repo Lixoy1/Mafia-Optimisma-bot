@@ -8,7 +8,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .admin import is_chat_admin
 from .content import GLOBAL, ITEMS, MODES, ROLES
 from .engine import GameEngine, living_summary, pick, player_link, role_team, role_title
-from .keyboards import admin_mode_keyboard, admin_settings_keyboard, shop_keyboard
+from .keyboards import (
+    admin_back_keyboard, admin_misc_keyboard, admin_mode_keyboard,
+    admin_role_threshold_keyboard, admin_roles_keyboard, admin_settings_keyboard,
+    admin_time_values_keyboard, admin_timings_keyboard, shop_keyboard,
+)
 from .models import NightAction, Phase, PlayerState
 from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
 from .protocol import decode_action, encode_action
@@ -364,6 +368,8 @@ async def cb_night(callback: CallbackQuery):
             pass
     if team_payload and game_snapshot and player_snapshot:
         await engine._notify_team(callback.bot, game_snapshot, player_snapshot, team_payload, attribution=False)
+    if game_snapshot:
+        await engine.maybe_finish_night_early(callback.bot, game_snapshot)
 
 @router.callback_query(F.data.startswith("n2:"))
 async def cb_night_second(callback: CallbackQuery):
@@ -407,6 +413,7 @@ async def cb_night_second(callback: CallbackQuery):
         role = ROLES[player.role_key or "optimist"]
         role_phrase = pick(role.chat_action_phrases) if role.chat_action_phrases else None
         group_id = game.chat_id
+        game_snapshot = game
 
     await callback.answer("Действие принято.")
     try:
@@ -424,6 +431,7 @@ async def cb_night_second(callback: CallbackQuery):
             await callback.bot.send_message(group_id, role_phrase)
         except Exception:
             pass
+    await engine.maybe_finish_night_early(callback.bot, game_snapshot)
 
 @router.callback_query(F.data.startswith("noop:"))
 async def cb_noop(callback: CallbackQuery):
@@ -570,6 +578,7 @@ async def cb_bomb(callback: CallbackQuery):
         await callback.message.answer(f"Ты выбрал(а): <b>{escape(target_name or '')}</b>")
     except Exception:
         pass
+    await engine.maybe_finish_night_early(callback.bot, game)
 
 async def _admin_panel_payload(callback: CallbackQuery, chat_id: int):
     assert engine
@@ -579,22 +588,33 @@ async def _admin_panel_payload(callback: CallbackQuery, chat_id: int):
         title = getattr(chat, "title", None) or "Игровой чат"
     except Exception:
         title = "Игровой чат"
+    try:
+        cfg = await engine.storage.get_chat_settings(chat_id)
+    except Exception:
+        cfg = {}
+    timing = {
+        "registration_seconds": int(cfg.get("registration_seconds", engine.settings.registration_seconds)),
+        "night_seconds": int(cfg.get("night_seconds", engine.settings.night_seconds)),
+        "discussion_seconds": int(cfg.get("discussion_seconds", engine.settings.discussion_seconds)),
+        "nomination_seconds": int(cfg.get("nomination_seconds", engine.settings.nomination_seconds)),
+        "verdict_seconds": int(cfg.get("verdict_seconds", engine.settings.verdict_seconds)),
+    }
     if game:
         status = (
             f"🎮 <b>Режим:</b> {MODES[game.mode]['emoji']} <b>{MODES[game.mode]['name']}</b>\n"
-            f"🎬 <b>Состояние:</b> <code>{game.phase.value}</code>\n"
-            f"👥 <b>Игроков:</b> {len(game.players)}"
+            f"🎬 <b>Состояние:</b> <code>{game.phase.value}</code> · 👥 {len(game.players)}"
         )
     else:
-        status = "🎬 <b>Состояние:</b> игра/регистрация сейчас не запущена"
+        status = "🎬 <b>Состояние:</b> игра сейчас не запущена"
     text = (
-        "⚙️ <b>Mafia Optimisma · Управление группой</b>\n"
+        "⚙️ <b>Mafia Optimisma · Настройки</b>\n"
         f"🏙 <b>Чат:</b> {escape(title)}\n\n"
         f"{status}\n\n"
-        f"⏱ Регистрация: {engine.settings.registration_seconds} сек. · "
-        f"Ночь: {engine.settings.night_seconds} сек. · "
-        f"День: {engine.settings.discussion_seconds} сек.\n\n"
-        "Выбери действие ниже."
+        "⏱ <b>Текущие правила для следующей игры</b>\n"
+        f"Регистрация {timing['registration_seconds']}с · Ночь {timing['night_seconds']}с · "
+        f"День {timing['discussion_seconds']}с\n\n"
+        "ℹ️ Настройки не меняют уже начавшуюся партию. Изменения применятся со следующей игры.\n\n"
+        "Выбери раздел ниже."
     )
     return text, admin_settings_keyboard(chat_id)
 
@@ -617,6 +637,189 @@ async def cb_admin(callback: CallbackQuery):
         except Exception:
             await callback.message.answer(text, reply_markup=markup)
         await callback.answer()
+        return
+
+    if action == "roles":
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        overrides = cfg.get("role_thresholds", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        await callback.message.edit_text(
+            "🎭 <b>Роли</b>\n\n"
+            "Выбери роль. Можно оставить порог «по режиму», включить её от конкретного "
+            "числа игроков или полностью отключить.\n\n"
+            "Изменения работают только со следующей партии.",
+            reply_markup=admin_roles_keyboard(chat_id, overrides),
+        )
+        await callback.answer()
+        return
+
+    if action == "role":
+        role_key = parts[3]
+        role = ROLES.get(role_key)
+        if not role:
+            await callback.answer("Неизвестная роль.", show_alert=True)
+            return
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        overrides = cfg.get("role_thresholds", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        selected = overrides.get(role_key)
+        state = "по правилам режима" if selected is None else (
+            "выключена" if int(selected) <= 0 else f"от {int(selected)} игроков"
+        )
+        await callback.message.edit_text(
+            f"{role.emoji} <b>{role.title}</b>\n\n"
+            f"Сейчас: <b>{state}</b>.\n"
+            "От скольких игроков включать эту роль?",
+            reply_markup=admin_role_threshold_keyboard(chat_id, role_key, selected),
+        )
+        await callback.answer()
+        return
+
+    if action == "role_set":
+        role_key, raw = parts[3], parts[4]
+        if role_key not in ROLES:
+            await callback.answer("Неизвестная роль.", show_alert=True)
+            return
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        overrides = cfg.get("role_thresholds", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        overrides = dict(overrides)
+        if raw == "default":
+            overrides.pop(role_key, None)
+        elif raw == "off":
+            overrides[role_key] = 0
+        else:
+            value = max(3, min(30, int(raw)))
+            overrides[role_key] = value
+        await engine.storage.set_chat_setting(chat_id, "role_thresholds", overrides)
+        selected = overrides.get(role_key)
+        role = ROLES[role_key]
+        state = "по правилам режима" if selected is None else (
+            "выключена" if int(selected) <= 0 else f"от {int(selected)} игроков"
+        )
+        await callback.message.edit_text(
+            f"{role.emoji} <b>{role.title}</b>\n\nСейчас: <b>{state}</b>.\n"
+            "От скольких игроков включать эту роль?",
+            reply_markup=admin_role_threshold_keyboard(chat_id, role_key, selected),
+        )
+        await callback.answer("Настройка сохранена для следующей игры.")
+        return
+
+    if action == "timings":
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        values = {
+            "registration_seconds": int(cfg.get("registration_seconds", engine.settings.registration_seconds)),
+            "night_seconds": int(cfg.get("night_seconds", engine.settings.night_seconds)),
+            "discussion_seconds": int(cfg.get("discussion_seconds", engine.settings.discussion_seconds)),
+            "nomination_seconds": int(cfg.get("nomination_seconds", engine.settings.nomination_seconds)),
+            "verdict_seconds": int(cfg.get("verdict_seconds", engine.settings.verdict_seconds)),
+        }
+        await callback.message.edit_text(
+            "⏱ <b>Тайминги</b>\n\nВыбери фазу, время которой хочешь изменить.",
+            reply_markup=admin_timings_keyboard(chat_id, values),
+        )
+        await callback.answer()
+        return
+
+    if action == "time":
+        field = parts[3]
+        allowed = {
+            "registration_seconds", "night_seconds", "discussion_seconds",
+            "nomination_seconds", "verdict_seconds",
+        }
+        if field not in allowed:
+            await callback.answer("Неизвестный тайминг.", show_alert=True)
+            return
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        selected = int(cfg.get(field, getattr(engine.settings, field)))
+        labels = {
+            "registration_seconds": "🎟 Регистрация", "night_seconds": "🌃 Ночь",
+            "discussion_seconds": "💬 Обсуждение", "nomination_seconds": "🗳 Выдвижение",
+            "verdict_seconds": "⚖️ Вердикт",
+        }
+        await callback.message.edit_text(
+            f"{labels[field]}\n\nСейчас: <b>{selected} секунд</b>. Выбери новое время:",
+            reply_markup=admin_time_values_keyboard(chat_id, field, selected),
+        )
+        await callback.answer()
+        return
+
+    if action == "time_set":
+        field, raw = parts[3], parts[4]
+        allowed = {
+            "registration_seconds", "night_seconds", "discussion_seconds",
+            "nomination_seconds", "verdict_seconds",
+        }
+        if field not in allowed:
+            await callback.answer("Неизвестный тайминг.", show_alert=True)
+            return
+        value = max(15, min(180, int(raw)))
+        await engine.storage.set_chat_setting(chat_id, field, value)
+        await callback.message.edit_text(
+            f"⏱ <b>Сохранено: {value} секунд</b>\n\nНастройка начнёт действовать со следующей игры.",
+            reply_markup=admin_time_values_keyboard(chat_id, field, value),
+        )
+        await callback.answer("Сохранено.")
+        return
+
+    if action == "chat_rules":
+        await callback.message.edit_text(
+            "🙊 <b>Чат во время игры</b>\n\n"
+            "🔒 Ночью сообщения живых игроков удаляются.\n"
+            "👻 Зрители и выбывшие не могут писать во время партии.\n"
+            "💋 Игрок под действием Ночной Дивы молчит и не голосует днём.\n\n"
+            "Эти правила являются частью игрового ядра и не отключаются — так рейтинг и партии остаются честными.",
+            reply_markup=admin_back_keyboard(chat_id),
+        )
+        await callback.answer()
+        return
+
+    if action == "misc":
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        protect = bool(cfg.get("protect_private_content", False))
+        early = bool(cfg.get("early_night_finish", True))
+        await callback.message.edit_text(
+            "🛠 <b>Разное</b>\n\n"
+            "🛡 <b>Защищённые ЛС</b> — игровые сообщения нельзя пересылать/копировать.\n"
+            "⚡ <b>Быстрая ночь</b> — если все активные роли уже сделали ход, утро наступает сразу.",
+            reply_markup=admin_misc_keyboard(chat_id, protect, early),
+        )
+        await callback.answer()
+        return
+
+    if action == "toggle":
+        feature = parts[3]
+        if feature not in {"protect_private_content", "early_night_finish"}:
+            await callback.answer("Неизвестная настройка.", show_alert=True)
+            return
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        default = False if feature == "protect_private_content" else True
+        new_value = not bool(cfg.get(feature, default))
+        await engine.storage.set_chat_setting(chat_id, feature, new_value)
+        cfg[feature] = new_value
+        await callback.message.edit_text(
+            "🛠 <b>Разное</b>\n\n"
+            "🛡 <b>Защищённые ЛС</b> — игровые сообщения нельзя пересылать/копировать.\n"
+            "⚡ <b>Быстрая ночь</b> — если все активные роли уже сделали ход, утро наступает сразу.",
+            reply_markup=admin_misc_keyboard(
+                chat_id, bool(cfg.get("protect_private_content", False)),
+                bool(cfg.get("early_night_finish", True)),
+            ),
+        )
+        await callback.answer("Настройка сохранена для следующей игры.")
+        return
+
+    if action == "reset":
+        await engine.storage.reset_chat_settings(chat_id)
+        text, markup = await _admin_panel_payload(callback, chat_id)
+        try:
+            await callback.message.edit_text(text, reply_markup=markup)
+        except Exception:
+            await callback.message.answer(text, reply_markup=markup)
+        await callback.answer("Настройки сброшены.")
         return
 
     if action == "mode_menu":

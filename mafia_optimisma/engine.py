@@ -98,7 +98,9 @@ CLANS_SEQUENCE = [
 ]
 
 
-def generate_roles(mode: str, count: int) -> list[str]:
+def generate_roles(
+    mode: str, count: int, role_thresholds: dict[str, int] | None = None
+) -> list[str]:
     """Build a balanced role pack for the selected ruleset.
 
     Crime specialists (Hacker/Spy/Lawyer in our names) occupy mafia faction
@@ -106,8 +108,23 @@ def generate_roles(mode: str, count: int) -> list[str]:
     games around 12-18 players can start at, or dangerously close to, mafia
     parity before anybody has made a move.
     """
+    role_thresholds = role_thresholds or {}
+
+    def unlocked(default_min: int, role_key: str) -> bool:
+        raw = role_thresholds.get(role_key)
+        if raw is None:
+            threshold = default_min
+        else:
+            try:
+                threshold = int(raw)
+            except (TypeError, ValueError):
+                threshold = default_min
+            if threshold <= 0:
+                return False
+        return count >= threshold
+
     if mode == "clans":
-        roles = [role for min_p, role in CLANS_SEQUENCE if count >= min_p]
+        roles = [role for min_p, role in CLANS_SEQUENCE if unlocked(min_p, role)]
         if count % 3 != 0 and count >= 12:
             roles.append("butcher")
         return (roles[:count] + ["optimist"] * count)[:count]
@@ -115,20 +132,28 @@ def generate_roles(mode: str, count: int) -> list[str]:
     mafia_count = max(1, count // 3)
 
     if mode == "classic":
-        unlocked = [role for min_p, role in CLASSIC_THRESHOLDS if count >= min_p]
-        fixed_town = ["surgeon"] + (["tracker"] if count >= 6 else [])
+        unlocked_roles = [role for min_p, role in CLASSIC_THRESHOLDS if unlocked(min_p, role)]
+        fixed_town = []
+        if unlocked(3, "surgeon"):
+            fixed_town.append("surgeon")
+        if unlocked(6, "tracker"):
+            fixed_town.append("tracker")
     elif mode == "chaos":
-        unlocked = [role for min_p, role in CHAOS_THRESHOLDS if count >= min_p]
+        unlocked_roles = [role for min_p, role in CHAOS_THRESHOLDS if unlocked(min_p, role)]
         fixed_town = []
     elif mode == "virus":
-        unlocked = [role for min_p, role in VIRUS_THRESHOLDS if count >= min_p]
+        unlocked_roles = [role for min_p, role in VIRUS_THRESHOLDS if unlocked(min_p, role)]
         fixed_town = []
     else:
-        unlocked = []
-        fixed_town = ["surgeon"] + (["tracker"] if count >= 6 else [])
+        unlocked_roles = []
+        fixed_town = []
+        if unlocked(3, "surgeon"):
+            fixed_town.append("surgeon")
+        if unlocked(6, "tracker"):
+            fixed_town.append("tracker")
 
-    mafia_specials = [role for role in unlocked if role_team(role) == "mafia"]
-    non_mafia_unlocked = [role for role in unlocked if role_team(role) != "mafia"]
+    mafia_specials = [role for role in unlocked_roles if role_team(role) == "mafia"]
+    non_mafia_unlocked = [role for role in unlocked_roles if role_team(role) != "mafia"]
 
     # Mafia specialists replace ordinary Torpedoes inside the faction quota.
     # Carleone always occupies one slot. If a future ruleset ever unlocks more
@@ -185,6 +210,26 @@ class GameEngine:
             lock = asyncio.Lock()
             self.locks[chat_id] = lock
         return lock
+
+    def _game_config(self, game: GameState | None) -> dict:
+        if not game:
+            return {}
+        raw = game.temp.get("_chat_settings", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def _duration(self, game: GameState, key: str, fallback: int | float) -> float:
+        raw = self._game_config(game).get(key, fallback)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = float(fallback)
+        return max(0.01, min(600.0, value))
+
+    def _feature(self, game: GameState | None, key: str, fallback: bool) -> bool:
+        raw = self._game_config(game).get(key, fallback)
+        if isinstance(raw, str):
+            return raw.strip().lower() not in {"0", "false", "off", "no"}
+        return bool(raw)
 
     async def persist(self, game: GameState) -> None:
         if game.phase == Phase.FINISHED:
@@ -601,7 +646,19 @@ class GameEngine:
         mapping.clear()
 
     async def begin_registration(self, bot: Bot, game: GameState) -> None:
-        await self._set_phase(game, Phase.REGISTRATION, self.settings.registration_seconds)
+        settings_loader = getattr(self.storage, "get_chat_settings", None)
+        if settings_loader is None:
+            game.temp["_chat_settings"] = {}
+        else:
+            try:
+                game.temp["_chat_settings"] = await settings_loader(game.chat_id)
+            except Exception:
+                self.log.exception("Could not load chat settings chat=%s", game.chat_id)
+                game.temp["_chat_settings"] = {}
+        registration_seconds = self._duration(
+            game, "registration_seconds", self.settings.registration_seconds
+        )
+        await self._set_phase(game, Phase.REGISTRATION, registration_seconds)
         await self.public_registration_message(bot, game)
         # Optional per-chat subscription: users explicitly enabling /notify get a
         # quiet private heads-up when a new registration opens.
@@ -620,7 +677,7 @@ class GameEngine:
         self._arm_registration_warning(bot, game)
         self._arm_phase_timer(
             game,
-            self.settings.registration_seconds,
+            registration_seconds,
             lambda: self.auto_start_registration(bot, game),
         )
 
@@ -709,17 +766,42 @@ class GameEngine:
         await self.persist(game)
         return True, f"✅ Ты успешно зарегистрирован(а) в игре «{escape(game.chat_title)}»."
 
-    def _assign_start_roles(self, game: GameState) -> None:
-        """Assign a complete fresh role pack before the start snapshot is persisted.
+    def _assign_start_roles(self, game: GameState, last_roles: dict[int, str] | None = None) -> None:
+        """Assign a complete fresh role pack with randomisation and anti-repeat.
 
-        The assignment is intentionally done in memory as one step. If the process
-        dies before the following snapshot write, SQLite still contains the old
-        REGISTRATION state and the game can safely auto-start again. If the write
-        succeeds, a restored RESOLVING snapshot always has a complete role pack.
+        Roles and players are independently shuffled.  When the same group plays
+        several rounds in a row we also minimise immediate role repeats, especially
+        special roles.  This is not a deterministic rotation: every candidate
+        assignment is still random, we simply choose the best of several shuffles.
         """
-        roles = generate_roles(game.mode, len(game.players))
-        players = list(game.players.values())
-        random.shuffle(players)
+        role_thresholds = self._game_config(game).get("role_thresholds", {})
+        if not isinstance(role_thresholds, dict):
+            role_thresholds = {}
+        base_roles = generate_roles(game.mode, len(game.players), role_thresholds)
+        base_players = list(game.players.values())
+        last_roles = last_roles or {}
+
+        best_players = list(base_players)
+        best_roles = list(base_roles)
+        best_score = 10**9
+        for _ in range(96):
+            players = list(base_players)
+            roles = list(base_roles)
+            random.shuffle(players)
+            random.shuffle(roles)
+            score = 0
+            for player, role_key in zip(players, roles):
+                if last_roles.get(player.user_id) == role_key:
+                    # Repeating a special role is much more noticeable than being
+                    # an ordinary Optimist twice, so avoid it more aggressively.
+                    score += 5 if role_key != "optimist" else 1
+            if score < best_score:
+                best_score = score
+                best_players, best_roles = players, roles
+            if score == 0:
+                break
+
+        players, roles = best_players, best_roles
         for p, role_key in zip(players, roles):
             p.role_key = role_key
             p.initial_role_key = role_key
@@ -798,8 +880,29 @@ class GameEngine:
             game.phase_started_at = now
             game.phase_deadline = None
             game.temp["resume_action"] = "start_night"
-            self._assign_start_roles(game)
+            last_role_loader = getattr(self.storage, "get_last_roles", None)
+            if last_role_loader is None:
+                last_roles = {}
+            else:
+                try:
+                    last_roles = await last_role_loader(
+                        game.chat_id, list(game.players.keys())
+                    )
+                except Exception:
+                    self.log.exception("Could not load previous roles chat=%s", game.chat_id)
+                    last_roles = {}
+            self._assign_start_roles(game, last_roles)
             await self.persist(game)
+            last_role_writer = getattr(self.storage, "set_last_roles", None)
+            if last_role_writer is not None:
+                try:
+                    await last_role_writer(
+                        game.chat_id,
+                        {p.user_id: (p.role_key or "optimist") for p in game.players.values()},
+                    )
+                except Exception:
+                    # Variety memory is cosmetic; a DB hiccup must never block a start.
+                    self.log.exception("Could not store previous roles chat=%s", game.chat_id)
 
             task = self.tasks.pop(game.chat_id, None)
             current_task = asyncio.current_task()
@@ -857,7 +960,9 @@ class GameEngine:
             game.votes.clear()
             game.verdict_votes.clear()
             game.nominated_id = None
+            chat_settings = dict(self._game_config(game))
             game.temp.clear()
+            game.temp["_chat_settings"] = chat_settings
             game.armor_piercing_pending.clear()
             for p in game.alive_players():
                 p.blocked = False
@@ -865,7 +970,8 @@ class GameEngine:
 
             promotions = self._inherit_roles(game)
             await self._announce_promotions(bot, game, promotions)
-            await self._set_phase(game, Phase.NIGHT, self.settings.night_seconds)
+            night_seconds = self._duration(game, "night_seconds", self.settings.night_seconds)
+            await self._set_phase(game, Phase.NIGHT, night_seconds)
 
             await send_phase_sticker(bot, game.chat_id, "night")
             me = None
@@ -877,7 +983,7 @@ class GameEngine:
                 bot,
                 game.chat_id,
                 f"🌃 <b>Ночь {game.day}, город засыпает.</b>\n"
-                f"До окончания ночи остается {self.settings.night_seconds} секунд.\n\n"
+                f"До окончания ночи остается {night_seconds} секунд.\n\n"
                 "Ночные действия — в личных сообщениях с ботом.",
                 reply_markup=open_bot_keyboard(getattr(me, "username", None)),
             )
@@ -918,7 +1024,38 @@ class GameEngine:
                     if msg:
                         game.night_pm_message_ids[bomber.user_id] = msg.message_id
             await self.persist(game)
-            self._arm_phase_timer(game, self.settings.night_seconds, lambda: self.end_night(bot, game))
+            self._arm_phase_timer(game, night_seconds, lambda: self.end_night(bot, game))
+
+    def _required_night_actor_ids(self, game: GameState) -> set[int]:
+        required: set[int] = set()
+        for player in game.alive_players():
+            if night_action_keyboard(game, player) is not None:
+                required.add(player.user_id)
+        if game.bomb_pending_for and not game.bomb_used:
+            bomber = game.get_player(game.bomb_pending_for)
+            if bomber and not bomber.alive and bomber.role_key == "bomber":
+                required.add(bomber.user_id)
+        return required
+
+    async def maybe_finish_night_early(self, bot: Bot, game: GameState) -> bool:
+        should_finish = False
+        async with self.lock_for(game.chat_id):
+            if store.get(game.chat_id) is not game or game.phase != Phase.NIGHT:
+                return False
+            if not self._feature(game, "early_night_finish", True):
+                return False
+            required = self._required_night_actor_ids(game)
+            completed = set(game.actions.keys())
+            if game.bomb_pending_for and game.bomb_used:
+                completed.add(game.bomb_pending_for)
+            if required and required.issubset(completed):
+                timer = self.tasks.get(game.chat_id)
+                if timer and timer is not asyncio.current_task() and not timer.done():
+                    timer.cancel()
+                should_finish = True
+        if should_finish:
+            await self.end_night(bot, game)
+        return should_finish
 
     def _inherit_roles(self, game: GameState) -> list[tuple[PlayerState, str]]:
         promotions: list[tuple[PlayerState, str]] = []
@@ -970,24 +1107,44 @@ class GameEngine:
             await self._disable_pm_controls(bot, game.night_pm_message_ids)
 
             deaths, public_events = await self.resolve_night(bot, game)
-            # Apply inheritance before the living-role summary, but announce it in
-            # the morning stream after deaths, matching the reference UI order.
-            promotions = self._inherit_roles(game)
 
-            await self._set_phase(game, Phase.DISCUSSION, self.settings.discussion_seconds)
+            winner_preview = self._detect_winner_state(game)
+            if winner_preview:
+                # The final night is rendered without inventing a morning that the
+                # city never reached. Show what happened, then the final screen.
+                if public_events:
+                    await self._safe_group(bot, game.chat_id, "\n".join(public_events))
+                if deaths:
+                    for p, reason in deaths:
+                        if not any(p.name in event for event in public_events):
+                            await self._safe_group(
+                                bot,
+                                game.chat_id,
+                                pick(GLOBAL["night_death"], name=player_link(p), role=role_title(p.role_key))
+                                + (f"\n_{reason}_" if reason else ""),
+                            )
+                else:
+                    await self._safe_group(bot, game.chat_id, pick(GLOBAL["no_deaths"]))
+                await self.check_win(bot, game)
+                return
+
+            # A continuing game gets the normal morning sequence.
+            promotions = self._inherit_roles(game)
+            discussion_seconds = self._duration(
+                game, "discussion_seconds", self.settings.discussion_seconds
+            )
+            await self._set_phase(game, Phase.DISCUSSION, discussion_seconds)
             await send_phase_sticker(bot, game.chat_id, "morning")
             await self._safe_group(
                 bot,
                 game.chat_id,
                 f"🏙 <b>День {game.day}, город просыпается.</b>\n"
-                f"До начала голосования {self.settings.discussion_seconds} секунд.",
+                f"До начала голосования {discussion_seconds} секунд.",
             )
             if public_events:
                 await self._safe_group(bot, game.chat_id, "\n".join(public_events))
             if deaths:
                 for p, reason in deaths:
-                    # If a special death (e.g. bodyguard) wasn't already described
-                    # in the public event stream, provide a generic fallback.
                     if not any(p.name in event for event in public_events):
                         await self._safe_group(
                             bot,
@@ -1003,15 +1160,12 @@ class GameEngine:
             await self._announce_promotions(bot, game, promotions)
             await self._safe_group(bot, game.chat_id, living_summary(game, reveal_roles=True))
             await self.persist(game)
-            winner = await self.check_win(bot, game)
-            if winner:
-                return
             await self._safe_group(
                 bot,
                 game.chat_id,
-                f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {self.settings.discussion_seconds} секунд.",
+                f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {discussion_seconds} секунд.",
             )
-            self._arm_phase_timer(game, self.settings.discussion_seconds, lambda: self.start_nomination(bot, game))
+            self._arm_phase_timer(game, discussion_seconds, lambda: self.start_nomination(bot, game))
 
     async def resolve_night(self, bot: Bot, game: GameState) -> tuple[list[tuple[PlayerState, str]], list[str]]:
         """Resolve one night deterministically enough for a social-deduction game.
@@ -1235,6 +1389,7 @@ class GameEngine:
         saved_by_heal: set[int] = set()
         attacked_ids: set[int] = set()
         protection_announced: set[tuple[str, int]] = set()
+        protection_announced: set[tuple[str, int]] = set()
 
         def attack_public_text(a: NightAction, target: PlayerState) -> str:
             attacker_role = action_role_key(a)
@@ -1410,7 +1565,10 @@ class GameEngine:
                 return
             game.votes.clear()
             game.nominated_id = None
-            await self._set_phase(game, Phase.NOMINATION, self.settings.nomination_seconds)
+            nomination_seconds = self._duration(
+                game, "nomination_seconds", self.settings.nomination_seconds
+            )
+            await self._set_phase(game, Phase.NOMINATION, nomination_seconds)
             await send_phase_sticker(bot, game.chat_id, "voting")
             me = None
             try:
@@ -1421,7 +1579,7 @@ class GameEngine:
                 bot,
                 game.chat_id,
                 f"🗳 <b>Выдвижение кандидата</b>\n"
-                f"У города {self.settings.nomination_seconds} секунд, чтобы выбрать подозреваемого.\n"
+                f"У города {nomination_seconds} секунд, чтобы выбрать подозреваемого.\n"
                 "Можно проголосовать или отказаться от выбора.",
                 reply_markup=open_bot_keyboard(getattr(me, "username", None)),
             )
@@ -1445,7 +1603,7 @@ class GameEngine:
                 except Exception:
                     continue
             await self.persist(game)
-            self._arm_phase_timer(game, self.settings.nomination_seconds, lambda: self.end_nomination(bot, game))
+            self._arm_phase_timer(game, nomination_seconds, lambda: self.end_nomination(bot, game))
 
     async def end_nomination(self, bot: Bot, game: GameState) -> None:
         next_step = "night"
@@ -1515,13 +1673,16 @@ class GameEngine:
                 go_night = False
                 game.verdict_votes.clear()
                 game.temp.pop("resume_action", None)
-                await self._set_phase(game, Phase.VERDICT, self.settings.verdict_seconds)
+                verdict_seconds = self._duration(
+                    game, "verdict_seconds", self.settings.verdict_seconds
+                )
+                await self._set_phase(game, Phase.VERDICT, verdict_seconds)
                 from .keyboards import verdict_keyboard
                 msg = await self._safe_group(
                     bot,
                     game.chat_id,
                     f"⚖️ <b>Город решает судьбу</b> {player_link(candidate)}\n"
-                    f"До конца решения — {self.settings.verdict_seconds} секунд.\n\n"
+                    f"До конца решения — {verdict_seconds} секунд.\n\n"
                     "👍 Казнить или 👎 Помиловать?",
                 )
                 if msg:
@@ -1542,7 +1703,7 @@ class GameEngine:
                     except Exception:
                         continue
                 await self.persist(game)
-                self._arm_phase_timer(game, self.settings.verdict_seconds, lambda: self.end_verdict(bot, game))
+                self._arm_phase_timer(game, verdict_seconds, lambda: self.end_verdict(bot, game))
 
         if go_night:
             await self.start_night(bot, game, allow_from_resolving=True)
@@ -1595,8 +1756,6 @@ class GameEngine:
                 await self._safe_group(bot, game.chat_id, f"🕊 <b>Город помиловал</b> {player_link(candidate)}.")
 
             promotions = self._inherit_roles(game)
-            await self._announce_promotions(bot, game, promotions)
-            await self._safe_group(bot, game.chat_id, living_summary(game, reveal_roles=True))
             if fatalist_wins:
                 game.temp["resume_action"] = "finish_fatalist"
             elif bomber:
@@ -1617,11 +1776,16 @@ class GameEngine:
             await self.finish_game(bot, game, "suicide")
             return
         if bomber:
+            await self._announce_promotions(bot, game, promotions)
+            await self._safe_group(bot, game.chat_id, living_summary(game, reveal_roles=True))
             await self.start_night(bot, game, allow_from_resolving=True)
             return
         winner = await self.check_win(bot, game)
-        if not winner:
-            await self.start_night(bot, game, allow_from_resolving=True)
+        if winner:
+            return
+        await self._announce_promotions(bot, game, promotions)
+        await self._safe_group(bot, game.chat_id, living_summary(game, reveal_roles=True))
+        await self.start_night(bot, game, allow_from_resolving=True)
 
     async def _ask_bomber_revenge(self, bot: Bot, game: GameState, bomber: PlayerState) -> None:
         # Transitional implementation: revenge is a short resolving sub-phase.
@@ -1655,6 +1819,34 @@ class GameEngine:
         winner = await self.check_win(bot, game)
         if not winner:
             await self.start_night(bot, game, allow_from_resolving=True)
+
+    def _detect_winner_state(self, game: GameState) -> str | None:
+        alive = game.alive_players()
+        if not alive:
+            return "draw"
+        teams = Counter(role_team(p.role_key) for p in alive)
+        if game.mode == "virus" and teams.get("infected", 0) == len(alive):
+            return "infected"
+        if len(alive) == 1 and teams.get("maniac", 0) == 1:
+            return "maniac"
+        if teams.get("infected", 0):
+            return None
+        crime_mafia = teams.get("mafia", 0)
+        crime_yakuza = teams.get("yakuza", 0)
+        maniac = teams.get("maniac", 0)
+        if game.mode == "clans":
+            if crime_mafia == 0 and crime_yakuza == 0 and maniac == 0:
+                return "town"
+            if crime_mafia > 0 and crime_yakuza == 0 and crime_mafia >= len(alive) - crime_mafia:
+                return "mafia"
+            if crime_yakuza > 0 and crime_mafia == 0 and crime_yakuza >= len(alive) - crime_yakuza:
+                return "yakuza"
+            return None
+        if crime_mafia == 0 and maniac == 0:
+            return "town"
+        if crime_mafia > 0 and crime_mafia >= len(alive) - crime_mafia:
+            return "mafia"
+        return None
 
     async def check_win(self, bot: Bot, game: GameState) -> str | None:
         if store.get(game.chat_id) is not game and game.phase != Phase.FINISHED:
@@ -1967,6 +2159,9 @@ class GameEngine:
         return sent
 
     async def _safe_pm(self, bot: Bot, user_id: int, text: str, **kwargs):
+        game = store.game_by_user(user_id)
+        if game and self._feature(game, "protect_private_content", False):
+            kwargs.setdefault("protect_content", True)
         try:
             return await bot.send_message(user_id, text, **kwargs)
         except Exception:

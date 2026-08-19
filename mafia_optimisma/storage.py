@@ -57,6 +57,11 @@ class Storage:
             except Exception:
                 # Column already exists on upgraded databases.
                 pass
+            try:
+                await db.execute("ALTER TABLE chat_users ADD COLUMN last_role TEXT")
+            except Exception:
+                # Column already exists on upgraded databases.
+                pass
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS game_sessions (
@@ -64,6 +69,15 @@ class Storage:
                     session_id TEXT NOT NULL,
                     phase TEXT NOT NULL,
                     state_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_settings (
+                    chat_id INTEGER PRIMARY KEY,
+                    settings_json TEXT NOT NULL DEFAULT '{}',
                     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
                 )
                 """
@@ -409,6 +423,76 @@ class Storage:
             ) as cur:
                 rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    async def get_last_roles(self, chat_id: int, user_ids: list[int] | None = None) -> dict[int, str]:
+        params: list[object] = [chat_id]
+        where = "chat_id = ? AND last_role IS NOT NULL"
+        if user_ids:
+            marks = ",".join("?" for _ in user_ids)
+            where += f" AND user_id IN ({marks})"
+            params.extend(int(x) for x in user_ids)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT user_id, last_role FROM chat_users WHERE {where}", tuple(params)
+            ) as cur:
+                rows = await cur.fetchall()
+        return {int(row["user_id"]): str(row["last_role"]) for row in rows if row["last_role"]}
+
+    async def set_last_roles(self, chat_id: int, role_map: dict[int, str]) -> None:
+        if not role_map:
+            return
+        async with aiosqlite.connect(self.path) as db:
+            await db.executemany(
+                "UPDATE chat_users SET last_role = ?, updated_at = strftime('%s','now') "
+                "WHERE chat_id = ? AND user_id = ?",
+                [(str(role), chat_id, int(user_id)) for user_id, role in role_map.items()],
+            )
+            await db.commit()
+
+    async def get_chat_settings(self, chat_id: int) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT settings_json FROM chat_settings WHERE chat_id = ?", (chat_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return {}
+        try:
+            data = json.loads(row["settings_json"] or "{}")
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    async def set_chat_settings(self, chat_id: int, settings: dict[str, Any]) -> None:
+        payload = json.dumps(settings or {}, ensure_ascii=False, separators=(",", ":"))
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO chat_settings (chat_id, settings_json, updated_at)
+                VALUES (?, ?, strftime('%s','now'))
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    settings_json = excluded.settings_json,
+                    updated_at = strftime('%s','now')
+                """,
+                (chat_id, payload),
+            )
+            await db.commit()
+
+    async def set_chat_setting(self, chat_id: int, key: str, value: Any) -> dict[str, Any]:
+        settings = await self.get_chat_settings(chat_id)
+        if value is None:
+            settings.pop(key, None)
+        else:
+            settings[key] = value
+        await self.set_chat_settings(chat_id, settings)
+        return settings
+
+    async def reset_chat_settings(self, chat_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM chat_settings WHERE chat_id = ?", (chat_id,))
+            await db.commit()
 
     async def save_game_state(self, game) -> None:
         """Persist one active game snapshot. The model owns JSON serialization."""

@@ -191,12 +191,24 @@ def shop_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+CONFIGURABLE_ROLE_KEYS = [
+    "surgeon", "tracker", "fatalist", "wanderer", "night_diva", "breacher",
+    "shield", "bomber", "shadow", "cadet", "lucky", "butcher",
+    "mercy_sister", "reporter", "alibi_master", "werewolf", "joker", "carrier",
+]
+
+
 def admin_settings_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🎮 Режим игры", callback_data=f"admin:mode_menu:{chat_id}"),
-            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin:refresh:{chat_id}"),
+            InlineKeyboardButton(text="🎭 Роли", callback_data=f"admin:roles:{chat_id}"),
+            InlineKeyboardButton(text="⏱ Тайминги", callback_data=f"admin:timings:{chat_id}"),
         ],
+        [
+            InlineKeyboardButton(text="🙊 Чат игры", callback_data=f"admin:chat_rules:{chat_id}"),
+            InlineKeyboardButton(text="🎮 Режимы игр", callback_data=f"admin:mode_menu:{chat_id}"),
+        ],
+        [InlineKeyboardButton(text="🛠 Разное", callback_data=f"admin:misc:{chat_id}")],
         [
             InlineKeyboardButton(text="▶️ Запустить", callback_data=f"admin:start:{chat_id}"),
             InlineKeyboardButton(text="⏱ +30 сек", callback_data=f"admin:extend:{chat_id}"),
@@ -209,7 +221,96 @@ def admin_settings_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🏆 Неделя", callback_data=f"admin:weekly:{chat_id}"),
             InlineKeyboardButton(text="📊 Статистика", callback_data=f"admin:stats:{chat_id}"),
         ],
+        [InlineKeyboardButton(text="🔄 Обновить панель", callback_data=f"admin:refresh:{chat_id}")],
+        [InlineKeyboardButton(text="♻️ Сбросить настройки", callback_data=f"admin:reset:{chat_id}")],
         [InlineKeyboardButton(text="🚫 Отменить регистрацию", callback_data=f"admin:cancel:{chat_id}")],
+    ])
+
+
+def admin_roles_keyboard(chat_id: int, overrides: dict | None = None) -> InlineKeyboardMarkup:
+    overrides = overrides or {}
+    rows = []
+    for key in CONFIGURABLE_ROLE_KEYS:
+        role = ROLES.get(key)
+        if not role:
+            continue
+        value = overrides.get(key)
+        suffix = ""
+        if value is not None:
+            try:
+                ivalue = int(value)
+                suffix = " · выкл" if ivalue <= 0 else f" · с {ivalue}"
+            except Exception:
+                pass
+        rows.append([InlineKeyboardButton(
+            text=f"{role.emoji} {role.title}{suffix}",
+            callback_data=f"admin:role:{chat_id}:{key}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_role_threshold_keyboard(chat_id: int, role_key: str, selected=None) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(text="↩️ По режиму", callback_data=f"admin:role_set:{chat_id}:{role_key}:default"),
+        InlineKeyboardButton(text="⬛ Выключить", callback_data=f"admin:role_set:{chat_id}:{role_key}:off"),
+    ]]
+    buttons = []
+    for value in range(3, 31):
+        mark = "✅" if str(selected) == str(value) else "▫️"
+        buttons.append(InlineKeyboardButton(
+            text=f"{mark} {value}", callback_data=f"admin:role_set:{chat_id}:{role_key}:{value}"
+        ))
+    rows += chunk_buttons(buttons, 4)
+    rows.append([InlineKeyboardButton(text="⬅️ К ролям", callback_data=f"admin:roles:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_timings_keyboard(chat_id: int, values: dict) -> InlineKeyboardMarkup:
+    fields = [
+        ("registration_seconds", "🎟 Регистрация"),
+        ("night_seconds", "🌃 Ночь"),
+        ("discussion_seconds", "💬 Обсуждение"),
+        ("nomination_seconds", "🗳 Выдвижение"),
+        ("verdict_seconds", "⚖️ Вердикт"),
+    ]
+    rows = []
+    for key, label in fields:
+        rows.append([InlineKeyboardButton(
+            text=f"{label} · {values[key]}с", callback_data=f"admin:time:{chat_id}:{key}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_time_values_keyboard(chat_id: int, field: str, selected: int) -> InlineKeyboardMarkup:
+    values = [15, 20, 30, 45, 60, 90, 120, 180]
+    buttons = [InlineKeyboardButton(
+        text=("✅ " if selected == value else "▫️ ") + f"{value} сек",
+        callback_data=f"admin:time_set:{chat_id}:{field}:{value}",
+    ) for value in values]
+    rows = chunk_buttons(buttons, 2)
+    rows.append([InlineKeyboardButton(text="⬅️ К таймингам", callback_data=f"admin:timings:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_misc_keyboard(chat_id: int, protect: bool, early: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{'✅' if protect else '⬜'} Защищённые ЛС",
+            callback_data=f"admin:toggle:{chat_id}:protect_private_content",
+        )],
+        [InlineKeyboardButton(
+            text=f"{'✅' if early else '⬜'} Быстрая ночь",
+            callback_data=f"admin:toggle:{chat_id}:early_night_finish",
+        )],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")],
+    ])
+
+
+def admin_back_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:refresh:{chat_id}")]
     ])
 
 
