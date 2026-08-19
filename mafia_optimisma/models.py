@@ -113,8 +113,9 @@ class GameState:
 
     # Stage 1 voting: voter -> nominated target or None (skip).
     votes: dict[int, int | None] = field(default_factory=dict)
-    # Stage 2 voting: voter -> True (execute) / False (pardon).
-    verdict_votes: dict[int, bool] = field(default_factory=dict)
+    # Stage 2 voting: voter -> True (execute) / False (pardon) / None (abstain).
+    # Missing key means the player has not voted at all.
+    verdict_votes: dict[int, bool | None] = field(default_factory=dict)
     nominated_id: int | None = None
 
     temp: dict[Any, Any] = field(default_factory=dict)
@@ -225,7 +226,7 @@ class GameState:
             for uid, target in (data.get("votes") or {}).items()
         }
         game.verdict_votes = {
-            int(uid): bool(value)
+            int(uid): (None if value is None else bool(value))
             for uid, value in (data.get("verdict_votes") or {}).items()
         }
         game.nominated_id = data.get("nominated_id")

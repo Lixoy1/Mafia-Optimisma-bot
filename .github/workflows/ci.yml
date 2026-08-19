@@ -31,6 +31,7 @@ jobs:
       - run: python tests/test_round_polish_core.py
       - run: python tests/test_admin_game_settings.py
       - run: python tests/test_public_verdict_hotfix.py
+      - run: python tests/test_mutable_verdict_hotfix.py
       - run: python tests/test_role_matrix.py
       - run: python tests/test_role_distribution.py
       - run: python tests/test_protocol.py

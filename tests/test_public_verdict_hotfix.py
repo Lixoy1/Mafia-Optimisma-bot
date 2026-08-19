@@ -70,23 +70,13 @@ class PublicVerdictHotfixTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(game.phase, Phase.VERDICT)
         self.assertEqual(game.verdict_pm_message_ids, {})
-        group_cards = [
-            m for m in self.bot.messages
-            if m.chat_id == game.chat_id and m.reply_markup is not None
-        ]
+        group_cards = [m for m in self.bot.messages if m.chat_id == game.chat_id and m.reply_markup is not None]
         self.assertEqual(len(group_cards), 1)
-        texts = [
-            button.text
-            for row in group_cards[0].reply_markup.inline_keyboard
-            for button in row
-        ]
-        self.assertEqual(texts, ["👍 Казнить", "👎 Помиловать"])
+        texts = [button.text for row in group_cards[0].reply_markup.inline_keyboard for button in row]
+        self.assertEqual(texts, ["👍 Казнить", "👎 Помиловать", "🤍 Воздержаться"])
         self.assertIn("20 секунд", group_cards[0].text)
         self.assertNotIn("20.0 секунд", group_cards[0].text)
-        private_verdict_cards = [
-            m for m in self.bot.messages
-            if m.chat_id in {1, 2, 3} and m.reply_markup is not None
-        ]
+        private_verdict_cards = [m for m in self.bot.messages if m.chat_id in {1, 2, 3} and m.reply_markup is not None]
         self.assertEqual(private_verdict_cards, [])
 
     def test_verdict_callback_does_not_delete_shared_group_card(self):
