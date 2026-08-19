@@ -53,6 +53,34 @@ if 'if action == "chat_toggle":' not in text:
     text = text[:i] + new + "\n" + text[j:]
     path.write_text(text, encoding="utf-8")
 
+# The verdict area is also changed by Player Experience (last-word flow). Apply
+# the day-shield UX first while the original stable block is still intact, so the
+# later migration sees its exact target already installed and becomes a no-op.
+engine_path = Path("mafia_optimisma/engine.py")
+engine_text = engine_path.read_text(encoding="utf-8")
+old_day_shield = '''                if await self._consume_game_item_safe(
+                    game, candidate.user_id, "day_shield", f"verdict:{game.day}:{candidate.user_id}"
+                ):
+                    await self._safe_group(bot, game.chat_id, f"☀️ <b>Солнечный иммунитет</b>\\n{player_link(candidate)} избежал(а) казни.")
+'''
+new_day_shield = '''                if await self._consume_game_item_safe(
+                    game, candidate.user_id, "day_shield", f"verdict:{game.day}:{candidate.user_id}"
+                ):
+                    await self._safe_group(
+                        bot, game.chat_id,
+                        f"☀️ <b>Солнечный иммунитет сорвал приговор</b>\\n{player_link(candidate)} уже стоял(а) у края — но казнь отменена."
+                    )
+                    await self._safe_pm(
+                        bot, candidate.user_id,
+                        "☀️ <b>Тебя приговорили, но Солнечный иммунитет сработал.</b>\\nПредмет потрачен. Ты остаёшься в игре."
+                    )
+'''
+if new_day_shield not in engine_text:
+    if old_day_shield not in engine_text:
+        raise RuntimeError("day-shield verdict marker not found")
+    engine_text = engine_text.replace(old_day_shield, new_day_shield, 1)
+    engine_path.write_text(engine_text, encoding="utf-8")
+
 # The second migration also contains some legacy exact-text replacements. Make
 # those calls idempotent where the semantic preparer has already installed the
 # target behavior, while keeping every unrelated missing marker strict.
