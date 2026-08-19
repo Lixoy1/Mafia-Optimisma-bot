@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 # Prepare the target callback block by stable semantic markers. This keeps copy
 # edits in the admin panel from breaking the migration.
@@ -108,6 +109,12 @@ if builder_path.exists():
         'ху(?:й|я|е|ё|и|ли)[а-яё]*',
         'ху(?:й|я|е|ё|и)[а-яё]*',
     )
+
+    # This builder emits Python source. Keep escape sequences such as \\n literal
+    # in the generated files instead of interpreting them inside the migration
+    # script itself. Only raw-prefix opening replacement literals; closing triple
+    # quotes are followed by a comma and therefore do not match this expression.
+    builder = re.sub(r"(?m)^    '''(?=[^',\r\n])", "    r'''", builder)
     builder_path.write_text(builder, encoding="utf-8")
 
 print("CHAT CONTROLS BUILDER PREPARED")
