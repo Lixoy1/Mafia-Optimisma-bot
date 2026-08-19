@@ -28,7 +28,7 @@ replace_once(
 
 for old, new, label in [
     ('f"До окончания ночи остается {night_seconds} секунд.\\n\\n"', 'f"До окончания ночи остается {self._seconds_text(night_seconds)} секунд.\\n\\n"', "night time display"),
-    ('f"До начала голосования {discussion_seconds} секунд.\\n"', 'f"До начала голосования {self._seconds_text(discussion_seconds)} секунд.\\n"', "day time display"),
+    ('f"До начала голосования {discussion_seconds} секунд."', 'f"До начала голосования {self._seconds_text(discussion_seconds)} секунд."', "day time display"),
     ('f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {discussion_seconds} секунд."', 'f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {self._seconds_text(discussion_seconds)} секунд."', "discussion time display"),
     ('f"У города {nomination_seconds} секунд, чтобы выбрать подозреваемого.\\n"', 'f"У города {self._seconds_text(nomination_seconds)} секунд, чтобы выбрать подозреваемого.\\n"', "nomination time display"),
     ('f"До конца решения — {verdict_seconds} секунд.\\n\\n"', 'f"До конца решения — {self._seconds_text(verdict_seconds)} секунд.\\n\\n"', "verdict time display"),
