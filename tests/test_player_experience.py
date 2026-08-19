@@ -1,8 +1,12 @@
 import asyncio
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from mafia_optimisma.config import Settings
 from mafia_optimisma.engine import GameEngine
