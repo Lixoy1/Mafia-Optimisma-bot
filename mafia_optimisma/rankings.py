@@ -29,6 +29,11 @@ def _pct(value: float) -> str:
     return text or "0"
 
 
+def _profile_link(row: dict[str, Any]) -> str:
+    name = escape(str(row.get("name") or row.get("username") or row.get("user_id") or "Игрок"))
+    return f'<a href="tg://user?id={int(row["user_id"])}">{name}</a>'
+
+
 def previous_week_bounds(now: datetime | None = None) -> tuple[int, int, datetime, datetime]:
     local = (now or datetime.now(MSK)).astimezone(MSK)
     current_monday = (local - timedelta(days=local.weekday())).replace(
@@ -279,7 +284,7 @@ def render_weekly_awards(rows: list[dict[str, Any]], start: datetime, end: datet
     for rank in sorted(by_rank):
         group = by_rank[rank]
         names = ", ".join(
-            f"{escape(str(row['name']))} ({_pct(float(row['win_rate']))} %)"
+            f"{_profile_link(row)} ({_pct(float(row['win_rate']))} %)"
             for row in group
         )
         wins = int(group[0]["wins"])
@@ -298,7 +303,7 @@ def render_weekly_awards(rows: list[dict[str, Any]], start: datetime, end: datet
                 )
             else:
                 split = ", ".join(
-                    f"{escape(str(row['name']))} — {row['money']} 💵" for row in group
+                    f"{_profile_link(row)} — {row['money']} 💵" for row in group
                 )
                 lines.append(
                     f"{rank}) {names} — <b>{wins} побед</b>, делят {pool} денег 💵: {split}"
@@ -320,7 +325,7 @@ def render_current_week(rows: list[dict[str, Any]], start: datetime, end: dateti
     for i, row in enumerate(rows, 1):
         marker = "🏆" if row["wins"] >= WEEKLY_MIN_WINS else "▫️"
         lines.append(
-            f"{i}) {marker} {escape(str(row['name']))} "
+            f"{i}) {marker} {_profile_link(row)} "
             f"({_pct(float(row['win_rate']))} %) — {row['wins']} побед / {row['games']} игр"
         )
     return "\n".join(lines)
@@ -366,7 +371,7 @@ def render_full_statistics(top: list[dict[str, Any]], counts: dict[str, int], to
     if top:
         for i, row in enumerate(top, 1):
             lines.append(
-                f"{i}) {escape(str(row['name']))} ({_pct(float(row['win_rate']))} %) "
+                f"{i}) {_profile_link(row)} ({_pct(float(row['win_rate']))} %) "
                 f"— <b>{row['wins']} побед</b> / {row['games']} игр"
             )
     else:

@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from .admin import is_chat_admin
 from .content import GLOBAL, ITEMS, MODES, ROLES
-from .engine import GameEngine, living_summary, pick, role_team, role_title
+from .engine import GameEngine, living_summary, pick, player_link, role_team, role_title
 from .keyboards import admin_mode_keyboard, admin_settings_keyboard, shop_keyboard
 from .models import NightAction, Phase, PlayerState
 from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
@@ -332,7 +332,7 @@ async def cb_night(callback: CallbackQuery):
                         if action == "mafia_kill"
                         else "🎴 Клан Сакуры выбрал жертву."
                     )
-                team_payload = f"{role_title(player.role_key)} {escape(player.name)} выбрал(а) {escape(target.name)}"
+                team_payload = f"{role_title(player.role_key)} {player_link(player)} выбрал(а) {player_link(target)}"
             await engine.persist(game)
             player_snapshot = player
             game_snapshot = game
@@ -441,6 +441,7 @@ async def cb_vote(callback: CallbackQuery):
         return
 
     group_text = None
+    nomination_prompt_id = None
     async with engine.lock_for(chat_id):
         game = store.get(chat_id)
         if not _fresh_game(game, session, day) or game.phase != Phase.NOMINATION:
@@ -458,8 +459,7 @@ async def cb_vote(callback: CallbackQuery):
             return
         if value == "skip":
             game.votes[voter.user_id] = None
-            await engine.persist(game)
-            group_text = pick(GLOBAL["vote_skip"], name=escape(voter.name))
+            group_text = f"🤍 {player_link(voter)} <i>воздержался(ась) от выдвижения.</i>"
             answer_text = "Ты решил(а) ни за кого не голосовать."
         else:
             try:
@@ -472,16 +472,20 @@ async def cb_vote(callback: CallbackQuery):
                 await callback.answer("Цель недоступна.", show_alert=True)
                 return
             game.votes[voter.user_id] = target_id
-            await engine.persist(game)
-            group_text = pick(GLOBAL["vote_cast"], voter=escape(voter.name), target=escape(target.name))
+            group_text = (
+                "🗳 <b>Голос принят</b>\n"
+                f"{player_link(voter)}  →  🎯 {player_link(target)}"
+            )
             answer_text = "Голос принят."
+        nomination_prompt_id = game.nomination_pm_message_ids.pop(voter.user_id, None)
+        await engine.persist(game)
         group_id = game.chat_id
 
     await callback.answer(answer_text)
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await engine._safe_delete(
+        callback.bot, callback.from_user.id,
+        nomination_prompt_id or getattr(callback.message, "message_id", None),
+    )
     try:
         await callback.bot.send_message(group_id, group_text)
     except Exception:
@@ -490,6 +494,7 @@ async def cb_vote(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("verdict:"))
 async def cb_verdict(callback: CallbackQuery):
     assert engine
+    verdict_prompt_id = None
     try:
         _, session, chat_raw, day_raw, value = callback.data.split(":", 4)
         chat_id, day = int(chat_raw), int(day_raw)
@@ -517,13 +522,14 @@ async def cb_verdict(callback: CallbackQuery):
             await callback.answer("Неизвестный вариант.", show_alert=True)
             return
         game.verdict_votes[voter.user_id] = value == "yes"
+        verdict_prompt_id = game.verdict_pm_message_ids.pop(voter.user_id, None)
         await engine.persist(game)
 
     await callback.answer("👍 За казнь" if value == "yes" else "👎 За помилование")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await engine._safe_delete(
+        callback.bot, callback.from_user.id,
+        verdict_prompt_id or getattr(callback.message, "message_id", None),
+    )
 
 @router.callback_query(F.data.startswith("bomb:"))
 async def cb_bomb(callback: CallbackQuery):
