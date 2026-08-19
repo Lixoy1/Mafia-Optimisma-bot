@@ -28,7 +28,8 @@ class OutputFormattingTests(unittest.IsolatedAsyncioTestCase):
         text = living_summary(g)
         self.assertIn('A &lt;B&gt; &amp; C', text)
         self.assertNotIn('A <B> & C', text)
-        self.assertIn('<b>Живые игроки:</b>', text)
+        self.assertIn('<b>Живые игроки</b>', text)
+        self.assertIn('tg://user?id=1', text)
 
     async def test_role_card_uses_html_and_escapes_teammate_name(self):
         g = GameState(2, 'chat', phase=Phase.RESOLVING, day=0)

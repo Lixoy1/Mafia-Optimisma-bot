@@ -190,10 +190,10 @@ class CoreTests(unittest.TestCase):
             2: PlayerState(2, "B", number=5, role_key="surgeon"),
         }
         text = living_summary(g)
-        self.assertIn("2) A", text)
-        self.assertIn("5) B", text)
-        self.assertIn("Карлеоне — 1", text)
-        self.assertIn("Хирург — 1", text)
+        self.assertIn('<b>02</b> · <a href="tg://user?id=1">A</a>', text)
+        self.assertIn('<b>05</b> · <a href="tg://user?id=2">B</a>', text)
+        self.assertIn("Карлеоне  ×1", text)
+        self.assertIn("Хирург  ×1", text)
         self.assertNotIn("A — 🤵", text)
 
     def test_anarchy_continues_after_mafia_dies_while_maniac_alive(self):
