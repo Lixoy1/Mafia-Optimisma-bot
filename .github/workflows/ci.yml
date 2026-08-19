@@ -19,6 +19,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      - run: python tools/prepare_player_experience_builder.py
       - run: python tools/apply_player_experience_upgrade.py
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q mafia_optimisma tests run.py
