@@ -225,6 +225,16 @@ class GameEngine:
             value = float(fallback)
         return max(0.01, min(600.0, value))
 
+    @staticmethod
+    def _seconds_text(value: int | float) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if number.is_integer():
+            return str(int(number))
+        return f"{number:g}"
+
     def _feature(self, game: GameState | None, key: str, fallback: bool) -> bool:
         raw = self._game_config(game).get(key, fallback)
         if isinstance(raw, str):
@@ -343,20 +353,36 @@ class GameEngine:
         candidate = game.get_player(game.nominated_id or 0)
         if not candidate or not candidate.alive:
             return
-        changed = False
-        for p in game.alive_players():
-            if p.user_id == candidate.user_id or p.silenced:
-                continue
-            if p.user_id in game.verdict_votes or p.user_id in game.verdict_pm_message_ids:
-                continue
-            msg = await self._safe_pm(
-                bot, p.user_id, f"⚖️ Казнить {escape(candidate.name)}?", reply_markup=verdict_keyboard(game)
-            )
-            if msg:
-                game.verdict_pm_message_ids[p.user_id] = msg.message_id
-                changed = True
-        if changed:
-            await self.persist(game)
+
+        # Compatibility with snapshots created by the old private-verdict build.
+        await self._delete_pm_controls(bot, game.verdict_pm_message_ids)
+        markup = verdict_keyboard(game)
+        if game.verdict_message_id:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=game.chat_id,
+                    message_id=game.verdict_message_id,
+                    reply_markup=markup,
+                )
+                await self.persist(game)
+                return
+            except Exception:
+                self.log.warning(
+                    "Could not restore verdict markup chat=%s message=%s; recreating card",
+                    game.chat_id, game.verdict_message_id,
+                )
+
+        msg = await self._safe_group(
+            bot,
+            game.chat_id,
+            f"⚖️ <b>Город решает судьбу</b> {player_link(candidate)}\n"
+            "Голосование продолжается после перезапуска.\n\n"
+            "👍 Казнить или 👎 Помиловать?",
+            reply_markup=markup,
+        )
+        if msg:
+            game.verdict_message_id = msg.message_id
+        await self.persist(game)
 
     async def _resume_game(self, bot: Bot, game: GameState) -> None:
         remaining = 0.0
@@ -983,7 +1009,7 @@ class GameEngine:
                 bot,
                 game.chat_id,
                 f"🌃 <b>Ночь {game.day}, город засыпает.</b>\n"
-                f"До окончания ночи остается {night_seconds} секунд.\n\n"
+                f"До окончания ночи остается {self._seconds_text(night_seconds)} секунд.\n\n"
                 "Ночные действия — в личных сообщениях с ботом.",
                 reply_markup=open_bot_keyboard(getattr(me, "username", None)),
             )
@@ -1139,7 +1165,7 @@ class GameEngine:
                 bot,
                 game.chat_id,
                 f"🏙 <b>День {game.day}, город просыпается.</b>\n"
-                f"До начала голосования {discussion_seconds} секунд.",
+                f"До начала голосования {self._seconds_text(discussion_seconds)} секунд.",
             )
             if public_events:
                 await self._safe_group(bot, game.chat_id, "\n".join(public_events))
@@ -1163,7 +1189,7 @@ class GameEngine:
             await self._safe_group(
                 bot,
                 game.chat_id,
-                f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {discussion_seconds} секунд.",
+                f"💬 <b>Обсуждение началось.</b> До выдвижения кандидата — {self._seconds_text(discussion_seconds)} секунд.",
             )
             self._arm_phase_timer(game, discussion_seconds, lambda: self.start_nomination(bot, game))
 
@@ -1579,7 +1605,7 @@ class GameEngine:
                 bot,
                 game.chat_id,
                 f"🗳 <b>Выдвижение кандидата</b>\n"
-                f"У города {nomination_seconds} секунд, чтобы выбрать подозреваемого.\n"
+                f"У города {self._seconds_text(nomination_seconds)} секунд, чтобы выбрать подозреваемого.\n"
                 "Можно проголосовать или отказаться от выбора.",
                 reply_markup=open_bot_keyboard(getattr(me, "username", None)),
             )
@@ -1678,30 +1704,17 @@ class GameEngine:
                 )
                 await self._set_phase(game, Phase.VERDICT, verdict_seconds)
                 from .keyboards import verdict_keyboard
+                await self._delete_pm_controls(bot, game.verdict_pm_message_ids)
                 msg = await self._safe_group(
                     bot,
                     game.chat_id,
                     f"⚖️ <b>Город решает судьбу</b> {player_link(candidate)}\n"
-                    f"До конца решения — {verdict_seconds} секунд.\n\n"
+                    f"До конца решения — {self._seconds_text(verdict_seconds)} секунд.\n\n"
                     "👍 Казнить или 👎 Помиловать?",
+                    reply_markup=verdict_keyboard(game),
                 )
                 if msg:
                     game.verdict_message_id = msg.message_id
-
-                game.verdict_pm_message_ids.clear()
-                for p in game.alive_players():
-                    if p.user_id == candidate.user_id or p.silenced:
-                        continue
-                    try:
-                        pm = await bot.send_message(
-                            p.user_id,
-                            f"⚖️ Казнить {escape(candidate.name)}?",
-                            reply_markup=verdict_keyboard(game),
-                        )
-                        if pm:
-                            game.verdict_pm_message_ids[p.user_id] = pm.message_id
-                    except Exception:
-                        continue
                 await self.persist(game)
                 self._arm_phase_timer(game, verdict_seconds, lambda: self.end_verdict(bot, game))
 

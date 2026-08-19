@@ -530,14 +530,9 @@ async def cb_verdict(callback: CallbackQuery):
             await callback.answer("Неизвестный вариант.", show_alert=True)
             return
         game.verdict_votes[voter.user_id] = value == "yes"
-        verdict_prompt_id = game.verdict_pm_message_ids.pop(voter.user_id, None)
         await engine.persist(game)
 
     await callback.answer("👍 За казнь" if value == "yes" else "👎 За помилование")
-    await engine._safe_delete(
-        callback.bot, callback.from_user.id,
-        verdict_prompt_id or getattr(callback.message, "message_id", None),
-    )
 
 @router.callback_query(F.data.startswith("bomb:"))
 async def cb_bomb(callback: CallbackQuery):

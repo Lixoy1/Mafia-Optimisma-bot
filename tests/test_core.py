@@ -484,8 +484,13 @@ class CoreTests(unittest.TestCase):
             await self.engine.end_nomination(self.bot, g)
             self.assertEqual(g.phase, Phase.VERDICT)
             self.assertEqual(g.nominated_id, 2)
-            self.assertNotIn(2, g.verdict_pm_message_ids)
-            self.assertEqual(set(g.verdict_pm_message_ids), {1, 3, 4})
+            self.assertEqual(g.verdict_pm_message_ids, {})
+            self.assertIsNotNone(g.verdict_message_id)
+            verdict_messages = [
+                m for m in self.bot.messages
+                if m.chat_id == g.chat_id and m.reply_markup is not None
+            ]
+            self.assertTrue(verdict_messages)
         asyncio.run(scenario())
 
     def test_verdict_yes_executes_and_always_advances(self):
@@ -704,7 +709,13 @@ class CoreTests(unittest.TestCase):
             restored_engine = GameEngine(self.engine.settings, self.storage)
             await restored_engine.restore_active_games(self.bot)
             fixed = store.get(g.chat_id)
-            self.assertEqual(set(fixed.verdict_pm_message_ids), {1, 3})
+            self.assertEqual(fixed.verdict_pm_message_ids, {})
+            self.assertIsNotNone(fixed.verdict_message_id)
+            verdict_messages = [
+                m for m in self.bot.messages
+                if m.chat_id == g.chat_id and m.reply_markup is not None
+            ]
+            self.assertTrue(verdict_messages)
             for task in list(restored_engine.tasks.values()) + list(restored_engine.warning_tasks.values()):
                 if not task.done(): task.cancel()
         asyncio.run(scenario())
