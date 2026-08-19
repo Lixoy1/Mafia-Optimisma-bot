@@ -2,12 +2,12 @@ name: Mafia Optimisma CI
 
 on:
   push:
-    branches: [main, v3-test, round-polish-settings]
+    branches: [main, v3-test, round-polish-settings, verdict-chat-fix]
   pull_request:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -19,6 +19,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      - run: python tools/apply_public_verdict_hotfix.py
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q mafia_optimisma tests run.py
       - run: python tests/test_core.py
@@ -30,6 +31,7 @@ jobs:
       - run: python tests/test_optimist_ui_hotfix.py
       - run: python tests/test_round_polish_core.py
       - run: python tests/test_admin_game_settings.py
+      - run: python tests/test_public_verdict_hotfix.py
       - run: python tests/test_role_matrix.py
       - run: python tests/test_role_distribution.py
       - run: python tests/test_protocol.py
@@ -39,3 +41,15 @@ jobs:
       - run: python tests/simulate_games.py
       - run: python tests/fuzz_restart.py
       - run: python tests/fuzz_role_interactions.py
+      - name: Publish verified verdict hotfix to staging branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/verdict-chat-fix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mafia_optimisma/engine.py mafia_optimisma/routers_callbacks.py tests/test_core.py tests/test_optimist_ui_hotfix.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Move verdict voting to group and clean timer formatting'
+            git push origin HEAD:verdict-chat-fix
+          fi
