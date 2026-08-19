@@ -63,9 +63,11 @@ class OutputFormattingTests(unittest.IsolatedAsyncioTestCase):
         msg = types.SimpleNamespace(text='<i>последнее</i> & слово')
         handled = await self.engine.handle_last_word(self.bot, msg, g, p)
         self.assertTrue(handled)
-        text = self.bot.messages[-1].text
-        self.assertIn('&lt;Dead&gt;', text)
-        self.assertIn('&lt;i&gt;последнее&lt;/i&gt; &amp; слово', text)
+        public = next(m.text for m in self.bot.messages if m.chat_id == g.chat_id)
+        self.assertIn('&lt;Dead&gt;', public)
+        self.assertIn('&lt;i&gt;последнее&lt;/i&gt; &amp; слово', public)
+        private = [m.text for m in self.bot.messages if m.chat_id == p.user_id]
+        self.assertTrue(any('Последнее слово принято' in text for text in private))
 
     def test_legacy_markdown_markers_are_gone_from_user_text_literals(self):
         for name in ['content.py', 'engine.py', 'routers_group.py', 'routers_private.py', 'routers_callbacks.py']:
