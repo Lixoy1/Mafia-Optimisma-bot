@@ -1,7 +1,11 @@
 import asyncio
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from mafia_optimisma.config import Settings
 from mafia_optimisma.engine import GameEngine
@@ -156,7 +160,7 @@ class LiveGameRulesHotfixTests(unittest.IsolatedAsyncioTestCase):
 
         private = [m.text for m in bot.messages if m.chat_id == 1]
         self.assertGreaterEqual(len(private), 2)
-        self.assertIn("Ночь 2", private[-1])
+        self.assertIn("Ночной цикл №2", private[-1])
         self.assertIn("Оптимист", private[-1])
         self.assertTrue("сп" in private[-1].lower() or "действ" in private[-1].lower())
 

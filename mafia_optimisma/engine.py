@@ -15,6 +15,7 @@ from .config import Settings
 from .content import GLOBAL, MODES, ROLES, TEAMS, STICKERS
 from .keyboards import night_action_keyboard, vote_keyboard, join_keyboard, open_bot_keyboard
 from .models import GameState, NightAction, Phase, PlayerState
+from .rankings import record_game_result
 from .state import store
 from .storage import Storage
 
@@ -45,6 +46,16 @@ def role_title(role_key: str | None) -> str:
 
 def role_team(role_key: str | None) -> str:
     return ROLES[role_key or "optimist"].team
+
+
+def player_link(player: PlayerState) -> str:
+    """Safe clickable Telegram profile link for public/private game messages."""
+    return f'<a href="tg://user?id={int(player.user_id)}">{escape(player.name)}</a>'
+
+
+def player_link_by_id(game: GameState, user_id: int) -> str:
+    player = game.get_player(int(user_id))
+    return player_link(player) if player else "—"
 
 
 def alive_by_team(game: GameState, team: str) -> list[PlayerState]:
@@ -141,20 +152,19 @@ def generate_roles(mode: str, count: int) -> list[str]:
     return roles
 
 def living_summary(game: GameState, reveal_roles: bool = True) -> str:
-    """Public Black-Mafia-style summary: stable player numbers + role counts.
-
-    We reveal how many living copies of each role remain, never who owns them.
-    Player numbers are assigned at registration and are never renumbered.
-    """
-    lines = ["\n<b>Живые игроки:</b>"]
-    for p in sorted(game.alive_players(), key=lambda x: (x.number or 10**9, x.user_id)):
+    """Compact Optimist UI: stable slots, clickable players and one role per row."""
+    alive = sorted(game.alive_players(), key=lambda x: (x.number or 10**9, x.user_id))
+    lines = ["👥 <b>Живые игроки</b>", "━━━━━━━━━━━━"]
+    for p in alive:
         number = p.number or 0
-        lines.append(f"{number}) {escape(p.name)}")
+        lines.append(f"<b>{number:02d}</b> · {player_link(p)}")
     if reveal_roles:
-        counts = Counter(role_title(p.role_key) for p in game.alive_players())
+        counts = Counter(role_title(p.role_key) for p in alive)
         if counts:
-            lines.append("\n<b>Роли:</b> " + "; ".join(f"{role} — {count}" for role, count in counts.items()))
-    lines.append(f"\n<b>Кол-во игроков:</b> {len(game.alive_players())}")
+            lines += ["", "🎭 <b>Роли в городе</b>"]
+            for role, count in counts.items():
+                lines.append(f"• {role}  ×{count}")
+    lines += ["", f"🌆 <b>В игре:</b> {len(alive)}"]
     return "\n".join(lines)
 
 
@@ -584,6 +594,12 @@ class GameEngine:
             await self._safe_disable(bot, user_id, message_id)
         mapping.clear()
 
+    async def _delete_pm_controls(self, bot: Bot, mapping: dict[int, int]) -> None:
+        """Delete short-lived voting cards so PM history does not become cluttered."""
+        for user_id, message_id in list(mapping.items()):
+            await self._safe_delete(bot, user_id, message_id)
+        mapping.clear()
+
     async def begin_registration(self, bot: Bot, game: GameState) -> None:
         await self._set_phase(game, Phase.REGISTRATION, self.settings.registration_seconds)
         await self.public_registration_message(bot, game)
@@ -821,7 +837,7 @@ class GameEngine:
             )
             if teammates:
                 text += "\n\n<b>Твои союзники:</b>\n" + "\n".join(
-                    f"{escape(m.name)} — {role_title(m.role_key)}" for m in teammates
+                    f"{player_link(m)} — {role_title(m.role_key)}" for m in teammates
                 )
             await self._safe_pm(bot, p.user_id, text)
 
@@ -870,13 +886,22 @@ class GameEngine:
             for p in game.alive_players():
                 role = ROLES[p.role_key or "optimist"]
                 kb = night_action_keyboard(game, p)
-                text = random.choice(role.night_prompts)
-                try:
-                    msg = await bot.send_message(p.user_id, text, reply_markup=kb) if kb else await bot.send_message(p.user_id, text)
-                    if kb and msg:
-                        game.night_pm_message_ids[p.user_id] = msg.message_id
-                except Exception:
-                    continue
+                prompt = random.choice(role.night_prompts) if role.night_prompts else "Этой ночью у тебя нет отдельного действия."
+                if kb:
+                    text = prompt
+                else:
+                    # Passive roles still receive a fresh role reminder every night.
+                    # This also makes the PM useful when the user opens it via the
+                    # group's «Перейти в бота» button on Night 2+.
+                    text = (
+                        f"🌙 <b>Ночной цикл №{game.day}</b>\n"
+                        f"Ты — <b>{role.title}</b>.\n\n"
+                        "💤 У тебя нет ночного действия. Отдыхай и жди утра.\n"
+                        f"{escape(prompt)}"
+                    )
+                msg = await self._safe_pm(bot, p.user_id, text, reply_markup=kb)
+                if kb and msg:
+                    game.night_pm_message_ids[p.user_id] = msg.message_id
 
             # A lynched Подрывник takes revenge during the following ordinary NIGHT,
             # not in a separate 20-second pseudo-phase. His one revenge control is
@@ -967,7 +992,7 @@ class GameEngine:
                         await self._safe_group(
                             bot,
                             game.chat_id,
-                            pick(GLOBAL["night_death"], name=escape(p.name), role=role_title(p.role_key))
+                            pick(GLOBAL["night_death"], name=player_link(p), role=role_title(p.role_key))
                             + (f"\n_{reason}_" if reason else ""),
                         )
                     game.pending_last_words.add(p.user_id)
@@ -1209,16 +1234,20 @@ class GameEngine:
         public_events: list[str] = []
         saved_by_heal: set[int] = set()
         attacked_ids: set[int] = set()
+        protection_announced: set[tuple[str, int]] = set()
 
         def attack_public_text(a: NightAction, target: PlayerState) -> str:
             attacker_role = action_role_key(a)
-            if a.action_type == "solo_kill":
-                return f"{role_title(attacker_role)} устроил ночной кошмар для {escape(target.name)} — {role_title(target.role_key)}"
-            if a.action_type == "shoot":
-                return f"{role_title(attacker_role)} выстрелил в {escape(target.name)} — {role_title(target.role_key)}"
-            if a.action_type == "yakuza_kill":
-                return f"{role_title(attacker_role)} расправился с {escape(target.name)} — {role_title(target.role_key)}"
-            return f"{role_title(attacker_role)} беспощадно убил {escape(target.name)} — {role_title(target.role_key)}"
+            verb = {
+                "solo_kill": "устроил ночной кошмар",
+                "shoot": "открыл огонь",
+                "yakuza_kill": "нанёс удар",
+            }.get(a.action_type, "атаковал")
+            return (
+                f"🔻 <b>Ночной удар</b>\n"
+                f"{role_title(attacker_role)} {verb}: {player_link(target)}\n"
+                f"🎭 Роль цели: <b>{role_title(target.role_key)}</b>"
+            )
 
         for a in kill_actions:
             if not a.target_id:
@@ -1246,21 +1275,40 @@ class GameEngine:
                     dead_ids.add(guard.user_id)
                     deaths.append((guard, f"Защищал(а) {target.name}"))
                     public_events.append(
-                        f"{role_title(guard.role_key)} погиб, защищая {escape(target.name)}"
+                        "🛡 <b>Защита сработала</b>\n"
+                        f"{player_link(guard)} прикрыл(а) {player_link(target)} и погиб(ла)."
                     )
                     await self._safe_pm(bot, guard.user_id, f"🛡 Ты погиб(ла), защищая {escape(target.name)}.")
                     continue
 
             if not armor and target.user_id in healed:
                 saved_by_heal.add(target.user_id)
+                if ("heal", target.user_id) not in protection_announced:
+                    protection_announced.add(("heal", target.user_id))
+                    public_events.append(
+                        "🩺 <b>Хирург успел вовремя</b>\n"
+                        f"{player_link(target)} пережил(а) ночное нападение."
+                    )
                 await self._safe_pm(bot, actor.user_id, "🩺 Цель пережила нападение.")
                 continue
             if not armor and await self._consume_game_item_safe(
                 game, target.user_id, "night_shield", f"night_shield:{a.actor_id}:{a.action_type}:{a.target_id}"
             ):
+                if ("shield", target.user_id) not in protection_announced:
+                    protection_announced.add(("shield", target.user_id))
+                    public_events.append(
+                        "🛡 <b>Ночной оберег вспыхнул</b>\n"
+                        f"{player_link(target)} пережил(а) смертельную атаку."
+                    )
                 await self._safe_pm(bot, target.user_id, "🛡 Ночной оберег спас тебя от смерти.")
                 continue
             if not armor and target.role_key == "lucky" and random.randint(1, 100) <= 75:
+                if ("lucky", target.user_id) not in protection_announced:
+                    protection_announced.add(("lucky", target.user_id))
+                    public_events.append(
+                        "🍀 <b>Фортуна улыбнулась</b>\n"
+                        f"{player_link(target)} чудом избежал(а) гибели."
+                    )
                 await self._safe_pm(bot, target.user_id, "🍀 Сегодня удача спасла тебя от смерти.")
                 continue
 
@@ -1286,7 +1334,8 @@ class GameEngine:
                 dead_ids.add(bomb_target.user_id)
                 deaths.append((bomb_target, "Месть Подрывника"))
                 public_events.append(
-                    f"💣 Подрывник забрал с собой {escape(bomb_target.name)} — {role_title(bomb_target.role_key)}"
+                    "💥 <b>Последний сюрприз Подрывника</b>\n"
+                    f"Подрывник забрал с собой {player_link(bomb_target)} — <b>{role_title(bomb_target.role_key)}</b>"
                 )
         # Revenge expires at the end of this night whether the bomber chose or not.
         game.bomb_pending_for = None
@@ -1403,7 +1452,7 @@ class GameEngine:
         async with self.lock_for(game.chat_id):
             if store.get(game.chat_id) is not game or game.phase != Phase.NOMINATION:
                 return
-            await self._disable_pm_controls(bot, game.nomination_pm_message_ids)
+            await self._delete_pm_controls(bot, game.nomination_pm_message_ids)
             await self._safe_disable(bot, game.chat_id, game.nomination_message_id)
             await self._safe_delete(bot, game.chat_id, game.nomination_message_id)
             game.nomination_message_id = None
@@ -1421,7 +1470,7 @@ class GameEngine:
                 max_votes = max(counts.values())
                 leaders = [uid for uid, count in counts.items() if count == max_votes]
                 if len(leaders) != 1:
-                    names = [escape(game.get_player(uid).name) for uid in leaders if game.get_player(uid)]
+                    names = [player_link(game.get_player(uid)) for uid in leaders if game.get_player(uid)]
                     await self._safe_group(
                         bot,
                         game.chat_id,
@@ -1471,7 +1520,7 @@ class GameEngine:
                 msg = await self._safe_group(
                     bot,
                     game.chat_id,
-                    f"⚖️ <b>Город решает судьбу {escape(candidate.name)}.</b>\n"
+                    f"⚖️ <b>Город решает судьбу</b> {player_link(candidate)}\n"
                     f"До конца решения — {self.settings.verdict_seconds} секунд.\n\n"
                     "👍 Казнить или 👎 Помиловать?",
                 )
@@ -1504,7 +1553,7 @@ class GameEngine:
         async with self.lock_for(game.chat_id):
             if store.get(game.chat_id) is not game or game.phase != Phase.VERDICT:
                 return
-            await self._disable_pm_controls(bot, game.verdict_pm_message_ids)
+            await self._delete_pm_controls(bot, game.verdict_pm_message_ids)
             await self._safe_disable(bot, game.chat_id, game.verdict_message_id)
             await self._safe_delete(bot, game.chat_id, game.verdict_message_id)
             game.verdict_message_id = None
@@ -1512,14 +1561,15 @@ class GameEngine:
 
             yes_voters = [uid for uid, value in game.verdict_votes.items() if value]
             no_voters = [uid for uid, value in game.verdict_votes.items() if not value]
-            yes_names = ", ".join(escape(game.get_player(uid).name) for uid in yes_voters if game.get_player(uid)) or "—"
-            no_names = ", ".join(escape(game.get_player(uid).name) for uid in no_voters if game.get_player(uid)) or "—"
+            yes_names = "\n".join(f"• {player_link(game.get_player(uid))}" for uid in yes_voters if game.get_player(uid)) or "• —"
+            no_names = "\n".join(f"• {player_link(game.get_player(uid))}" for uid in no_voters if game.get_player(uid)) or "• —"
             await self._safe_group(
                 bot,
                 game.chat_id,
-                f"🗳 <b>Результат голосования:</b>\n"
-                f"👍 Да ({len(yes_voters)}): {yes_names}\n"
-                f"👎 Нет ({len(no_voters)}): {no_names}",
+                "⚖️ <b>Вердикт города</b>\n"
+                "━━━━━━━━━━━━\n"
+                f"👍 <b>За казнь — {len(yes_voters)}</b>\n{yes_names}\n\n"
+                f"👎 <b>За помилование — {len(no_voters)}</b>\n{no_names}",
             )
 
             executed = bool(candidate and candidate.alive and len(yes_voters) > len(no_voters) and len(yes_voters) > 0)
@@ -1527,14 +1577,14 @@ class GameEngine:
                 if await self._consume_game_item_safe(
                     game, candidate.user_id, "day_shield", f"verdict:{game.day}:{candidate.user_id}"
                 ):
-                    await self._safe_group(bot, game.chat_id, f"⚖️ Солнечный иммунитет спас {escape(candidate.name)} от казни.")
+                    await self._safe_group(bot, game.chat_id, f"☀️ <b>Солнечный иммунитет</b>\n{player_link(candidate)} избежал(а) казни.")
                 else:
                     candidate.alive = False
                     game.pending_last_words.add(candidate.user_id)
                     await self._safe_group(
                         bot,
                         game.chat_id,
-                        pick(GLOBAL["lynch"], name=escape(candidate.name), role=role_title(candidate.role_key)),
+                        pick(GLOBAL["lynch"], name=player_link(candidate), role=role_title(candidate.role_key)),
                     )
                     await self._safe_pm(bot, candidate.user_id, pick(GLOBAL["last_word_prompt"]))
                     if candidate.role_key == "fatalist":
@@ -1542,7 +1592,7 @@ class GameEngine:
                     elif candidate.role_key == "bomber":
                         bomber = candidate
             elif candidate:
-                await self._safe_group(bot, game.chat_id, f"🕊 <b>{escape(candidate.name)} помилован(а).</b>")
+                await self._safe_group(bot, game.chat_id, f"🕊 <b>Город помиловал</b> {player_link(candidate)}.")
 
             promotions = self._inherit_roles(game)
             await self._announce_promotions(bot, game, promotions)
@@ -1805,6 +1855,19 @@ class GameEngine:
                 await self.storage.save_game_state(game)
             except Exception:
                 self.log.exception("Could not retain unfinished finalisation chat=%s", game.chat_id)
+            return False
+
+        # Ranking history is part of finalisation too. If this tiny idempotent
+        # write fails, keep the FINISHED snapshot so the retry can restore it;
+        # otherwise weekly/team statistics could silently lose a completed game.
+        try:
+            await record_game_result(self.storage, game, winner)
+        except Exception:
+            self.log.exception("Could not record game result chat=%s session=%s", game.chat_id, game.session_id)
+            try:
+                await self.storage.save_game_state(game)
+            except Exception:
+                pass
             return False
 
         try:

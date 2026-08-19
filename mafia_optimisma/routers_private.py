@@ -8,6 +8,7 @@ from .content import ITEMS, MODES, ROLES
 from .engine import GameEngine
 from .keyboards import shop_keyboard
 from .models import Phase
+from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
 from .state import store
 
 router = Router(name="private")
@@ -59,6 +60,20 @@ async def profile(message: Message):
         return
     p = await engine.storage.ensure_profile(user.id, user.full_name, user.username)
     await message.answer(engine.format_profile(p))
+
+
+@router.message(Command("stats"), F.chat.type == "private")
+async def stats_pm(message: Message):
+    assert engine
+    top, counts, total = await full_statistics(engine.storage, 10)
+    await message.answer(render_full_statistics(top, counts, total))
+
+
+@router.message(Command("week", "weekly", "topweek"), F.chat.type == "private")
+async def weekly_stats_pm(message: Message):
+    assert engine
+    rows, start, end = await current_week_leaderboard(engine.storage, 10)
+    await message.answer(render_current_week(rows, start, end))
 
 
 @router.message(Command("mystats"), F.chat.type == "private")
