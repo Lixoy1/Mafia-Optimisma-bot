@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# Prepare the target callback block by stable semantic markers. This keeps copy
+# edits in the admin panel from breaking the migration.
 path = Path("mafia_optimisma/routers_callbacks.py")
 text = path.read_text(encoding="utf-8")
 start = '    if action == "chat_rules":\n'
@@ -50,4 +52,26 @@ if 'if action == "chat_toggle":' not in text:
         raise RuntimeError("chat_rules/misc markers not found")
     text = text[:i] + new + "\n" + text[j:]
     path.write_text(text, encoding="utf-8")
+
+# The second migration also contains a legacy exact-text replacement for this
+# same block. Make that call safely idempotent once the semantic preparer has
+# already installed chat_toggle. Keep all other missing markers strict.
+builder_path = Path("tools/apply_chat_controls_and_items.py")
+if builder_path.exists():
+    builder = builder_path.read_text(encoding="utf-8")
+    old_helper = '''    if old not in text:\n        raise RuntimeError(f"source block not found in {path}: {old[:160]!r}")\n'''
+    new_helper = '''    if old not in text:\n        if (\n            path == "mafia_optimisma/routers_callbacks.py"\n            and 'if action == "chat_toggle":' in text\n            and "admin_chat_rules_keyboard(chat_id, cfg)" in text\n        ):\n            return\n        raise RuntimeError(f"source block not found in {path}: {old[:160]!r}")\n'''
+    if new_helper not in builder:
+        if old_helper not in builder:
+            raise RuntimeError("chat-controls replace_once helper marker not found")
+        builder = builder.replace(old_helper, new_helper, 1)
+
+    # Avoid false positives such as «хулиган». The common obscene roots are still
+    # caught (e.g. «охуенно», «нахуй», etc.) without treating «хули-» as a root.
+    builder = builder.replace(
+        'ху(?:й|я|е|ё|и|ли)[а-яё]*',
+        'ху(?:й|я|е|ё|и)[а-яё]*',
+    )
+    builder_path.write_text(builder, encoding="utf-8")
+
 print("CHAT CONTROLS BUILDER PREPARED")
