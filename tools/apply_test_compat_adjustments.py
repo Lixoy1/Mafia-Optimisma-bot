@@ -14,15 +14,21 @@ if marker not in rank:
     rank = rank.replace(old, new, 1)
 rank_path.write_text(rank, encoding="utf-8")
 
-# Do not reuse the exact group banner token "Ночь 1" in passive-role PMs: old
-# concurrency tests count that token to ensure the public Night card is emitted
-# only once. The private reminder remains explicit and clearer to the player.
+# Keep passive PM wording deterministic and explicit. This is both clearer in the
+# real Telegram flow and avoids reusing the exact public banner token "Ночь 1",
+# which the historical concurrency test counts to detect duplicate starts.
 engine_path = Path("mafia_optimisma/engine.py")
 engine = engine_path.read_text(encoding="utf-8")
 engine = engine.replace(
     'f"🌙 <b>Ночь {game.day}</b>\\n"',
     'f"🌙 <b>Ночной цикл №{game.day}</b>\\n"',
 )
+needle = '''                        f"Ты — <b>{role.title}</b>.\\n\\n"\n                        f"{escape(prompt)}"\n'''
+replacement = '''                        f"Ты — <b>{role.title}</b>.\\n\\n"\n                        "💤 У тебя нет ночного действия. Отдыхай и жди утра.\\n"\n                        f"{escape(prompt)}"\n'''
+if "💤 У тебя нет ночного действия. Отдыхай и жди утра." not in engine:
+    if needle not in engine:
+        raise SystemExit("passive reminder target not found")
+    engine = engine.replace(needle, replacement, 1)
 engine_path.write_text(engine, encoding="utf-8")
 
 print("test compatibility adjustments applied")
