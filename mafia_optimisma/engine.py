@@ -1228,8 +1228,7 @@ class GameEngine:
                             pick(GLOBAL["night_death"], name=player_link(p), role=role_title(p.role_key))
                             + (f"\n_{reason}_" if reason else ""),
                         )
-                    game.pending_last_words.add(p.user_id)
-                    await self._safe_pm(bot, p.user_id, pick(GLOBAL["last_word_prompt"]))
+                    await self._offer_last_word(bot, game, p)
             else:
                 await self._safe_group(bot, game.chat_id, pick(GLOBAL["no_deaths"]))
 
@@ -1288,16 +1287,36 @@ class GameEngine:
             if await self._consume_game_item_safe(
                 game, target.user_id, "perfume", f"block:{a.actor_id}:{a.target_id}"
             ):
-                await self._safe_pm(bot, target.user_id, "🧴 Дымный парфюм защитил тебя от ночной блокировки.")
+                await self._safe_pm(
+                    bot, target.user_id,
+                    "🧴 <b>Дымный парфюм растворил чужой план.</b>\n"
+                    "Кто-то пытался сорвать твой ночной ход, но блокировка не сработала."
+                )
+                await self._safe_pm(
+                    bot, actor.user_id,
+                    "🌫 <b>Цель исчезла в дыме.</b> Блокировка сорвалась — ночной ход цели остался активен."
+                )
                 continue
             target.blocked = True
             executed_blocks.append(a)
-            blocker_title = role_title(action_role_key(a))
-            await self._safe_pm(bot, actor.user_id, f"Действие на {escape(target.name)} сработало.")
-            await self._safe_pm(
-                bot, target.user_id,
-                f"🌙 У вас был(а) {blocker_title}: ваш ночной ход отменён."
-            )
+            blocker_key = action_role_key(a)
+            blocker_title = role_title(blocker_key)
+            await self._safe_pm(bot, actor.user_id, f"✅ Действие на {escape(target.name)} сработало.")
+            if blocker_key == "night_diva":
+                effect_text = (
+                    "💋 <b>Ночная Дива украла твою ночь.</b>\n"
+                    "Твоё ночное действие отменено. Если Хирург не снимет последствия, "
+                    "днём ты не сможешь говорить и голосовать."
+                )
+            elif blocker_key == "bonebreaker":
+                effect_text = (
+                    "💪 <b>Костолом сорвал твои планы.</b>\n"
+                    "Твоё ночное действие отменено. Без помощи Хирурга днём придётся молчать "
+                    "и пропустить голосование."
+                )
+            else:
+                effect_text = f"🌙 <b>{blocker_title}</b> сорвал(а) твой ночной ход."
+            await self._safe_pm(bot, target.user_id, effect_text)
 
         # Every non-block action from a blocked actor is cancelled.
         effective_actions = executed_blocks + [
@@ -1324,8 +1343,22 @@ class GameEngine:
         # A block also silences for the day unless a real, non-blocked heal reached the target.
         for a in executed_blocks:
             target = game.get_player(a.target_id or 0)
-            if target and target.user_id not in healed:
+            if not target:
+                continue
+            if target.user_id in healed:
+                target.silenced = False
+                await self._safe_pm(
+                    bot, target.user_id,
+                    "🩺 <b>Хирург вернул тебя в строй.</b>\n"
+                    "Последствия ночной блокировки сняты — днём можно говорить и голосовать."
+                )
+            else:
                 target.silenced = True
+                await self._safe_pm(
+                    bot, target.user_id,
+                    "🤐 <b>Последствия ночи остались до вечера.</b>\n"
+                    "Сегодня в игровом чате нельзя говорить и участвовать в голосовании."
+                )
 
         # Only effective visits are visible to watchers / infection mechanics.
         visits: dict[int, list[int]] = defaultdict(list)
@@ -1392,17 +1425,32 @@ class GameEngine:
             target = game.get_player(a.target_id or 0)
             role = ROLES[action_role_key(a)]
             if a.action_type in {"check", "mafia_role_check"} and target:
-                await self._safe_pm(bot, target.user_id, "🔎 Кто-то заинтересовался твоей ролью.")
                 if a.action_type == "mafia_role_check" and await self._consume_game_item_safe(
                     game, target.user_id, "antivirus", f"antivirus:{a.actor_id}:{a.action_type}:{a.target_id}"
                 ):
-                    await self._safe_pm(bot, actor.user_id, "📀 Взлом сорвался: у цели сработал Антивирус.")
+                    await self._safe_pm(
+                        bot, target.user_id,
+                        "📀 <b>Кто-то полез в твоё досье.</b>\n"
+                        "Антивирус захлопнул дверь перед Взломщиком — настоящую роль он не получил."
+                    )
+                    await self._safe_pm(
+                        bot, actor.user_id,
+                        "📀 <b>Доступ закрыт.</b> Антивирус цели уничтожил след запроса — роль осталась неизвестна."
+                    )
                     continue
                 shown = role_title(target.role_key)
-                if await self._consume_game_item_safe(
+                papers_used = await self._consume_game_item_safe(
                     game, target.user_id, "clean_papers", f"papers:{a.actor_id}:{a.action_type}:{a.target_id}"
-                ):
+                )
+                if papers_used:
                     shown = role_title("optimist")
+                    await self._safe_pm(
+                        bot, target.user_id,
+                        "📂 <b>Кто-то заинтересовался твоей ролью.</b>\n"
+                        "Но «Чистые документы» уже лежали на столе. Проверяющий уверен, что ты — 🙂 <b>Оптимист</b>."
+                    )
+                else:
+                    await self._safe_pm(bot, target.user_id, "🔎 Кто-то заинтересовался твоей ролью.")
                 # Мастер Алиби fools the Commissioner's town check; the Sakura
                 # Фальсификатор fools the Mafia hacker check. They are not a
                 # universal disguise against every investigative role.
@@ -1531,7 +1579,11 @@ class GameEngine:
                         "🛡 <b>Ночной оберег вспыхнул</b>\n"
                         f"{player_link(target)} пережил(а) смертельную атаку."
                     )
-                await self._safe_pm(bot, target.user_id, "🛡 Ночной оберег спас тебя от смерти.")
+                await self._safe_pm(
+                    bot, target.user_id,
+                    "🛡 <b>Ночной оберег принял удар на себя.</b>\nТы должен(на) был(а) погибнуть, но этой ночью смерть прошла мимо."
+                )
+                await self._safe_pm(bot, actor.user_id, "🛡 Удар погас в защите цели. Эта атака не убила её.")
                 continue
             if not armor and target.role_key == "lucky" and random.randint(1, 100) <= 75:
                 if ("lucky", target.user_id) not in protection_announced:
@@ -1599,19 +1651,19 @@ class GameEngine:
                     if visitor.role_key == "surgeon":
                         if random.randint(1, 100) <= 75:
                             carrier.role_key = "optimist"
-                            await self._safe_pm(bot, carrier.user_id, "🩺 Тебя вылечили. Теперь ты 🙂 Оптимист.")
-                            logs.append(f"Носитель {carrier.name} вылечен")
+                            await self._safe_pm(bot, carrier.user_id, "🩺 Терапия сработала. Инфекция отступила — теперь ты 🙂 Оптимист.")
+                            logs.append(f"Инфицированный {carrier.name} вылечен")
                         else:
                             visitor.role_key = "carrier"
                             carrier.infected_spread_count += 1
-                            await self._safe_pm(bot, visitor.user_id, "🧟 Ты заразился(ась). Твоя новая роль: Носитель.")
+                            await self._safe_pm(bot, visitor.user_id, "🧬 Контакт оказался заразным. Твоя новая роль: 🧬 Инфицированный.")
                             logs.append(f"{visitor.name} заражён")
                     elif ROLES[visitor.role_key or "optimist"].action_type != "compare_clans":
                         chance = 25 if visitor.user_id in healed else 75
                         if random.randint(1, 100) <= chance:
                             visitor.role_key = "carrier"
                             carrier.infected_spread_count += 1
-                            await self._safe_pm(bot, visitor.user_id, "🧟 После ночного визита ты стал(а) Носителем.")
+                            await self._safe_pm(bot, visitor.user_id, "🧬 После ночного визита всё изменилось. Теперь ты — 🧬 Инфицированный.")
                             logs.append(f"{visitor.name} заражён")
         for p in game.alive_players():
             if p.role_key != "werewolf":
@@ -1666,7 +1718,7 @@ class GameEngine:
             for p in game.alive_players():
                 if p.silenced:
                     game.votes[p.user_id] = None
-                    await self._safe_pm(bot, p.user_id, "💋 У тебя была Ночная Дива: сегодня ты не голосуешь.")
+                    await self._safe_pm(bot, p.user_id, "🤐 Ночной эффект всё ещё действует: сегодня ты не участвуешь в выдвижении кандидата.")
                     continue
                 try:
                     pm = await bot.send_message(
@@ -1805,16 +1857,22 @@ class GameEngine:
                 if await self._consume_game_item_safe(
                     game, candidate.user_id, "day_shield", f"verdict:{game.day}:{candidate.user_id}"
                 ):
-                    await self._safe_group(bot, game.chat_id, f"☀️ <b>Солнечный иммунитет</b>\n{player_link(candidate)} избежал(а) казни.")
+                    await self._safe_group(
+                        bot, game.chat_id,
+                        f"☀️ <b>Солнечный иммунитет сорвал приговор</b>\n{player_link(candidate)} уже стоял(а) у края — но казнь отменена."
+                    )
+                    await self._safe_pm(
+                        bot, candidate.user_id,
+                        "☀️ <b>Тебя приговорили, но Солнечный иммунитет сработал.</b>\nПредмет потрачен. Ты остаёшься в игре."
+                    )
                 else:
                     candidate.alive = False
-                    game.pending_last_words.add(candidate.user_id)
                     await self._safe_group(
                         bot,
                         game.chat_id,
                         pick(GLOBAL["lynch"], name=player_link(candidate), role=role_title(candidate.role_key)),
                     )
-                    await self._safe_pm(bot, candidate.user_id, pick(GLOBAL["last_word_prompt"]))
+                    await self._offer_last_word(bot, game, candidate)
                     if candidate.role_key == "fatalist":
                         fatalist_wins = True
                     elif candidate.role_key == "bomber":
@@ -2058,10 +2116,10 @@ class GameEngine:
             duration_text = f"{minutes} мин. {seconds} сек." if minutes else f"{seconds} сек."
             lines = [header, "", "<b>Победившие игроки:</b>"]
             winners = [p for p in game.players.values() if p.user_id in winner_ids]
-            lines += [f"{escape(p.name)} — {role_title(p.role_key)}" for p in winners] if winners else ["—"]
+            lines += [f"{player_link(p)} — {role_title(p.role_key)}" for p in winners] if winners else ["—"]
             lines += ["", "<b>Остальные игроки:</b>"]
             others = [p for p in game.players.values() if p.user_id not in winner_ids]
-            lines += [f"{escape(p.name)} — {role_title(p.role_key)}" for p in others] if others else ["—"]
+            lines += [f"{player_link(p)} — {role_title(p.role_key)}" for p in others] if others else ["—"]
             lines += ["", f"⏱ <b>Игра длилась:</b> {duration_text}"]
             sent = await self._safe_group(bot, game.chat_id, "\n".join(lines))
             if sent is not None:
@@ -2074,6 +2132,10 @@ class GameEngine:
         reward_enabled = len(game.players) >= self.settings.min_reward_players
         rewards_ok = True
         reward_once = getattr(self.storage, "reward_once", None)
+        sent_ids = {
+            int(uid) for uid in (game.temp.get("final_pm_sent_ids") or [])
+            if str(uid).lstrip("-").isdigit()
+        }
         for p in game.players.values():
             win = p.user_id in winner_ids
             money = 20 if (reward_enabled and win) else 0
@@ -2090,22 +2152,59 @@ class GameEngine:
             if not reward:
                 rewards_ok = False
                 continue
-            # If this reward was committed before a crash, do not spam its PM on
-            # replay. The money/XP is already correct thanks to reward_once.
-            if reward.get("already_applied"):
+            if p.user_id in sent_ids:
                 continue
-            if reward_enabled and win:
-                text = (
-                    f"🏆 За победу в Mafia Optimisma тебе начислено {reward['money']} 💵.\n"
-                    "Нажми /profile, чтобы посмотреть аккаунт."
-                )
-            elif not reward_enabled:
-                text = f"💵 В партиях меньше {self.settings.min_reward_players} игроков денежная награда не начисляется."
-            else:
-                text = "🏁 Партия окончена. Статистика сохранена."
-            if reward["level_up"]:
-                text += f"\n🌟 Новый уровень: {reward['level']}!"
-            await self._safe_pm(bot, p.user_id, text)
+
+            profile = None
+            try:
+                profile = await self.storage.get_profile(p.user_id)
+            except Exception:
+                self.log.exception("Could not load final profile user=%s", p.user_id)
+            games = int((profile or {}).get("games", 0))
+            wins_count = int((profile or {}).get("wins", 0))
+            winrate = (wins_count / games * 100) if games else 0.0
+            balance = int((profile or {}).get("money", 0))
+            level = int((profile or {}).get("level", reward.get("level", 1)))
+            duration = max(
+                0,
+                int((game.finished_at or time.time()) - (game.started_at or game.finished_at or time.time())),
+            )
+            minutes, seconds = divmod(duration, 60)
+            duration_text = f"{minutes} мин. {seconds} сек." if minutes else f"{seconds} сек."
+            result_title = "🏆 <b>ПОБЕДА!</b>" if win else "🌘 <b>Партия окончена — сегодня без победы.</b>"
+            flavor = (
+                "Оптимизм окупился. Забирай результат и готовь алиби на следующую игру 😎"
+                if win else
+                "Город запомнил твой номер. В следующей партии история может быть совсем другой 🙂"
+            )
+            note = ""
+            if not reward_enabled:
+                note = f"\n<i>💵 Денежные награды включаются от {self.settings.min_reward_players} игроков.</i>"
+            text = (
+                f"{result_title}\n{flavor}\n\n"
+                f"👤 <b>{escape(p.name)}</b>\n"
+                f"🎭 Ты играл(а): <b>{role_title(p.role_key)}</b>\n"
+                f"🏙 Группа: <b>{escape(game.chat_title)}</b>\n"
+                f"⏱ Партия: {duration_text}\n\n"
+                f"🎮 Игры: <b>{games}</b>\n"
+                f"🏆 Победы: <b>{wins_count}</b>\n"
+                f"📈 Винрейт: <b>{winrate:.1f}%</b>\n\n"
+                f"💵 За партию: <b>+{int(reward.get('money', 0))}</b>\n"
+                f"⭐ XP: <b>+{int(reward.get('xp', 0))}</b>\n"
+                f"💰 Баланс: <b>{balance}</b>\n"
+                f"🌟 Уровень: <b>{level}</b>{note}"
+            )
+            from .keyboards import post_game_keyboard
+            sent = await self._safe_pm(
+                bot, p.user_id, text, reply_markup=post_game_keyboard(game.chat_id)
+            )
+            if sent is not None:
+                sent_ids.add(p.user_id)
+                game.temp["final_pm_sent_ids"] = sorted(sent_ids)
+                try:
+                    await self.storage.save_game_state(game)
+                except Exception:
+                    self.log.exception("Could not persist final-PM marker chat=%s user=%s", game.chat_id, p.user_id)
 
         if not rewards_ok:
             # Keep the FINISHED snapshot. A local retry and, if needed, the next
@@ -2235,6 +2334,20 @@ class GameEngine:
             self.log.exception("Telegram private send failed user=%s", user_id)
             return None
 
+    async def _offer_last_word(self, bot: Bot, game: GameState, player: PlayerState) -> None:
+        from .keyboards import post_game_keyboard
+        game.pending_last_words.add(player.user_id)
+        await self.persist(game)
+        await self._safe_pm(
+            bot,
+            player.user_id,
+            "💀 <b>Для тебя эта партия закончилась.</b>\n\n"
+            "Но город ещё может услышать твой голос.\n"
+            "✍️ Отправь сюда <b>одно</b> последнее сообщение — я передам его в игровой чат.\n\n"
+            "После первой отправки право последнего слова закроется автоматически.",
+            reply_markup=post_game_keyboard(game.chat_id),
+        )
+
     async def handle_last_word(self, bot: Bot, message: Message, game: GameState, player: PlayerState) -> bool:
         if player.user_id not in game.pending_last_words:
             return False
@@ -2246,11 +2359,19 @@ class GameEngine:
         text = (message.text or "").strip()[:600]
         await self.persist(game)
         if not text:
+            await self._safe_pm(bot, player.user_id, "🕯 Последнее слово пропущено.")
             return True
         await self._safe_group(
             bot,
             game.chat_id,
-            pick(GLOBAL["last_word_public"], name=escape(player.name), text=escape(text)),
+            pick(GLOBAL["last_word_public"], name=player_link(player), text=escape(text)),
+        )
+        from .keyboards import post_game_keyboard
+        await self._safe_pm(
+            bot,
+            player.user_id,
+            "🕯 <b>Последнее слово принято.</b>\nГород услышал тебя. Теперь остаётся наблюдать за развязкой.",
+            reply_markup=post_game_keyboard(game.chat_id),
         )
         return True
 

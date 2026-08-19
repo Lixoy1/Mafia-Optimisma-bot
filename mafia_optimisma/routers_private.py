@@ -35,55 +35,68 @@ async def start_pm(message: Message, command: CommandObject):
         try:
             _, session, chat_raw = args.split("_", 2)
             candidate = store.get(int(chat_raw))
-            if (
-                candidate
-                and candidate.session_id == session
-                and candidate.phase == Phase.REGISTRATION
-                and candidate.get_player(user.id)
-            ):
+            if candidate and candidate.session_id == session and candidate.get_player(user.id):
                 linked_game = candidate
         except (ValueError, AttributeError):
             linked_game = None
     if linked_game is None:
-        candidate = store.game_by_user(user.id)
-        if candidate and candidate.phase == Phase.REGISTRATION and candidate.get_player(user.id):
-            linked_game = candidate
+        linked_game = store.game_by_user(user.id)
 
-    if linked_game is not None:
-        async with engine.lock_for(linked_game.chat_id):
-            pending = {
-                int(uid) for uid in (linked_game.temp.get("_pending_pm_activation") or [])
-                if str(uid).lstrip("-").isdigit()
-            }
-            pending.discard(user.id)
-            linked_game.temp["_pending_pm_activation"] = sorted(pending)
-            prompts = dict(linked_game.temp.get("_activation_prompt_ids") or {})
-            prompt_id = prompts.pop(str(user.id), None)
-            linked_game.temp["_activation_prompt_ids"] = prompts
-            await engine.persist(linked_game)
-        if prompt_id:
-            try:
-                await engine._safe_delete(message.bot, linked_game.chat_id, int(prompt_id))
-            except (TypeError, ValueError):
-                pass
-        await engine.update_registration_message(message.bot, linked_game)
+    if linked_game is not None and linked_game.get_player(user.id):
+        player = linked_game.get_player(user.id)
+        if linked_game.phase == Phase.REGISTRATION:
+            async with engine.lock_for(linked_game.chat_id):
+                pending = {
+                    int(uid) for uid in (linked_game.temp.get("_pending_pm_activation") or [])
+                    if str(uid).lstrip("-").isdigit()
+                }
+                was_pending = user.id in pending
+                pending.discard(user.id)
+                linked_game.temp["_pending_pm_activation"] = sorted(pending)
+                prompts = dict(linked_game.temp.get("_activation_prompt_ids") or {})
+                prompt_id = prompts.pop(str(user.id), None)
+                linked_game.temp["_activation_prompt_ids"] = prompts
+                await engine.persist(linked_game)
+            if prompt_id:
+                try:
+                    await engine._safe_delete(message.bot, linked_game.chat_id, int(prompt_id))
+                except (TypeError, ValueError):
+                    pass
+            await engine.update_registration_message(message.bot, linked_game)
+            if was_pending:
+                await message.answer(
+                    "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n\n"
+                    "✅ Личный игровой канал активирован.\n"
+                    f"🎭 Ты присоединился(ась) к игре в <b>{linked_game.chat_title}</b>.\n\n"
+                    "Место закреплено. Возвращайся в город — роль придёт сюда после старта 😎\n"
+                    "И да: повторно нажимать «Присоединиться» не нужно."
+                )
+            else:
+                await message.answer(
+                    "😏 <b>Да в игре ты уже! Слышишь? В игре :)</b>\n\n"
+                    f"🎭 Группа: <b>{linked_game.chat_title}</b>\n"
+                    "Просто жди старта. Второе место одному Оптимисту не выдаём."
+                )
+            return
+
+        role_line = ""
+        if player and player.role_key:
+            role_line = f"\n🎭 Твоя роль: <b>{ROLES[player.role_key].title}</b>"
         await message.answer(
-            "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n\n"
-            "✅ Личный игровой канал активирован.\n"
-            f"🎭 Твоё место в игре «{linked_game.chat_title}» закреплено.\n\n"
-            "Теперь просто возвращайся в группу и жди старта — повторно нажимать "
-            "«Присоединиться» не нужно. В следующих партиях достаточно одного JOIN 😎"
+            "🎲 <b>Ты уже участвуешь в партии Mafia Optimisma.</b>\n"
+            f"🏙 Группа: <b>{linked_game.chat_title}</b>{role_line}\n\n"
+            "Следи за этим ЛС: сюда приходят ночные действия, проверки и важные события."
         )
         return
 
     await message.answer(
         "🙂 <b>Добро пожаловать в Mafia Optimisma!</b>\n"
-        "Даже в мафии есть место оптимизму 😎\n\n"
-        "Личный канал готов: сюда будут приходить роли и ночные действия.\n"
-        "Теперь найди регистрацию в игровом чате и нажми «➕ Присоединиться».\n\n"
+        "Здесь даже мафия улыбается перед выстрелом 😎\n\n"
+        "🚀 Личный игровой канал активирован.\n"
+        "Теперь найди регистрацию в групповом чате и нажми «➕ Присоединиться».\n"
+        "После этого роли и ночные действия будут приходить сюда автоматически.\n\n"
         "Команды: /menu · /profile · /shop · /roles"
     )
-
 
 @router.message(Command("menu"), F.chat.type == "private")
 async def menu(message: Message):
@@ -159,7 +172,10 @@ async def shop(message: Message):
             price.append(f"{item['money']}💵")
         if item["gems"]:
             price.append(f"{item['gems']}💎")
-        text.append(f"{item['emoji']} <b>{item['name']}</b> — {' + '.join(price)}")
+        text.append(
+            f"{item['emoji']} <b>{item['name']}</b> — {' + '.join(price)}\n"
+            f"<i>{item.get('description', '')}</i>"
+        )
     await message.answer("\n".join(text), reply_markup=shop_keyboard())
 
 

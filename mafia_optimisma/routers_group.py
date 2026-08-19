@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+import re
 
 from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandObject
@@ -34,6 +35,53 @@ def _command_name(message: Message) -> str | None:
     token = text.split(maxsplit=1)[0][1:]
     return token.split("@", 1)[0].lower() or None
 
+
+_PROFANITY_RE = re.compile(
+    r"(?iu)(?<![а-яё])(?:"
+    r"бля(?:д[ьи]?|ть)?|сука|сук[аи]|суч(?:ка|ий|ара)|"
+    r"(?:о|на|за|по|вы|до|при|про|у|разъ|подъ)?ху(?:й|я|е|ё|и)[а-яё]*|"
+    r"(?:за|на|по|вы|про|пере|подъ|разъ|у)?[её]б[а-яё]*|"
+    r"пизд[а-яё]*|мудак[а-яё]*|долбо[её]б[а-яё]*|гандон[а-яё]*|шлюх[а-яё]*"
+    r")(?![а-яё])"
+)
+_LINK_RE = re.compile(
+    r"(?iu)(?:https?://|www\.|t\.me/|telegram\.me/|"
+    r"(?<![\w@])(?:[a-z0-9-]+\.)+(?:com|ru|net|org|io|gg|me|app|dev|nl|de)(?:/|\b))"
+)
+
+
+def _game_chat_feature(game, key: str, default: bool = False) -> bool:
+    cfg = game.temp.get("_chat_settings", {}) if game else {}
+    if not isinstance(cfg, dict):
+        return default
+    raw = cfg.get(key, default)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "off", "no"}
+    return bool(raw)
+
+
+def _contains_profanity(text: str | None) -> bool:
+    return bool(text and _PROFANITY_RE.search(text))
+
+
+def _message_has_link(message: Message) -> bool:
+    for entity in list(getattr(message, "entities", None) or []) + list(getattr(message, "caption_entities", None) or []):
+        kind = str(getattr(entity, "type", "")).lower()
+        if kind in {"url", "text_link"} or kind.endswith(".url") or kind.endswith(".text_link"):
+            return True
+    text = " ".join(filter(None, [getattr(message, "text", None), getattr(message, "caption", None)]))
+    return bool(_LINK_RE.search(text))
+
+
+def _moderation_reason(message: Message, game) -> str | None:
+    if _game_chat_feature(game, "block_stickers", False) and getattr(message, "sticker", None) is not None:
+        return "🖼 В этой партии администратор отключил стикеры в игровом чате."
+    text = " ".join(filter(None, [getattr(message, "text", None), getattr(message, "caption", None)]))
+    if _game_chat_feature(game, "block_links", False) and _message_has_link(message):
+        return "🔗 В этой партии ссылки в игровом чате запрещены."
+    if _game_chat_feature(game, "block_profanity", False) and _contains_profanity(text):
+        return "🤬 В этой партии включён фильтр мата. Сообщение удалено — переформулируй без него."
+    return None
 
 async def _delete_live_chat_message(message: Message, game, private_text: str) -> None:
     global engine
@@ -100,8 +148,13 @@ class LiveGameChatGuard(BaseMiddleware):
 
         if game.phase in {Phase.DISCUSSION, Phase.NOMINATION, Phase.VERDICT, Phase.RESOLVING} and player.silenced:
             await _delete_live_chat_message(
-                event, game, "❌ Ночная Дива лишила тебя права говорить до конца дня.",
+                event, game, "🤐 Ночной эффект лишил тебя права говорить и голосовать до конца дня.",
             )
+            return None
+
+        moderation_reason = _moderation_reason(event, game)
+        if moderation_reason:
+            await _delete_live_chat_message(event, game, moderation_reason)
             return None
 
         return await handler(event, data)
@@ -597,7 +650,20 @@ async def group_guard(message: Message):
         except Exception:
             pass
         try:
-            await message.bot.send_message(user.id, "❌ У вас была Ночная Дива, вы не можете общаться в чате до конца дня!")
+            await message.bot.send_message(user.id, "🤐 Ночной эффект ещё действует: до конца дня нельзя общаться и голосовать.")
         except Exception:
             pass
+        return
+
+    moderation_reason = _moderation_reason(message, game)
+    if moderation_reason:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        try:
+            await message.bot.send_message(user.id, moderation_reason)
+        except Exception:
+            pass
+        return
 

@@ -9,9 +9,9 @@ from .admin import is_chat_admin
 from .content import GLOBAL, ITEMS, MODES, ROLES
 from .engine import GameEngine, living_summary, pick, player_link, role_team, role_title
 from .keyboards import (
-    admin_back_keyboard, admin_misc_keyboard, admin_mode_keyboard,
+    admin_back_keyboard, admin_chat_rules_keyboard, admin_misc_keyboard, admin_mode_keyboard,
     admin_role_threshold_keyboard, admin_roles_keyboard, admin_settings_keyboard,
-    admin_time_values_keyboard, admin_timings_keyboard, shop_keyboard,
+    admin_time_values_keyboard, admin_timings_keyboard, shop_keyboard, post_game_keyboard,
 )
 from .models import NightAction, Phase, PlayerState
 from .rankings import current_week_leaderboard, full_statistics, render_current_week, render_full_statistics
@@ -197,6 +197,18 @@ async def cb_pm(callback: CallbackQuery):
     if callback.data == "pm:profile":
         p = await engine.storage.ensure_profile(user.id, user.full_name, user.username)
         await callback.message.answer(engine.format_profile(p))
+    elif callback.data == "pm:stats":
+        p = await engine.storage.ensure_profile(user.id, user.full_name, user.username)
+        games = int(p.get("games", 0))
+        wins = int(p.get("wins", 0))
+        rate = (wins / games * 100) if games else 0.0
+        await callback.message.answer(
+            "📊 <b>Моя статистика</b>\n"
+            f"🎮 Игры: {games}\n"
+            f"🏆 Победы: {wins}\n"
+            f"📈 Винрейт: {rate:.1f}%\n"
+            f"🌟 Уровень: {p.get('level', 1)}"
+        )
     elif callback.data == "pm:shop":
         game = store.game_by_user(user.id)
         if game and game.phase not in {Phase.REGISTRATION, Phase.FINISHED}:
@@ -205,6 +217,32 @@ async def cb_pm(callback: CallbackQuery):
             await callback.message.answer("🛒 Магазин усилений", reply_markup=shop_keyboard())
     await callback.answer()
 
+
+@router.callback_query(F.data.startswith("notify:set:"))
+async def cb_notify_set(callback: CallbackQuery):
+    assert engine
+    try:
+        _, _, chat_raw, value_raw = callback.data.split(":", 3)
+        chat_id = int(chat_raw)
+        enabled = value_raw == "1"
+    except (ValueError, AttributeError):
+        await callback.answer("Эта кнопка устарела.", show_alert=True)
+        return
+    user = callback.from_user
+    await engine.storage.set_notify_enabled(
+        chat_id, user.id, enabled, user.full_name, user.username
+    )
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=post_game_keyboard(chat_id, enabled)
+        )
+    except Exception:
+        pass
+    await callback.answer(
+        "🔔 Позову на следующую регистрацию в этой группе."
+        if enabled else "🔕 Хорошо, из этой группы звать не буду.",
+        show_alert=False,
+    )
 
 @router.callback_query(F.data.startswith("shop:"))
 async def cb_shop(callback: CallbackQuery):
@@ -810,15 +848,42 @@ async def cb_admin(callback: CallbackQuery):
         return
 
     if action == "chat_rules":
+        cfg = await engine.storage.get_chat_settings(chat_id)
         await callback.message.edit_text(
             "🙊 <b>Чат во время игры</b>\n\n"
-            "🔒 Ночью сообщения живых игроков удаляются.\n"
-            "👻 Зрители и выбывшие не могут писать во время партии.\n"
-            "💋 Игрок под действием Ночной Дивы молчит и не голосует днём.\n\n"
-            "Эти правила являются частью игрового ядра и не отключаются — так рейтинг и партии остаются честными.",
-            reply_markup=admin_back_keyboard(chat_id),
+            "🔒 Базовые правила всегда активны: ночью город молчит, зрители и выбывшие не вмешиваются, "
+            "а заблокированный игрок не говорит и не голосует.\n\n"
+            "Дополнительная модерация применяется с <b>следующей регистрацией</b> и сохраняется при рестарте бота.\n"
+            "🔢 «№ + имя» меняет подписи кнопок выдвижения кандидата.",
+            reply_markup=admin_chat_rules_keyboard(chat_id, cfg),
         )
         await callback.answer()
+        return
+
+    if action == "chat_toggle":
+        feature = parts[3]
+        defaults = {
+            "block_profanity": False,
+            "block_stickers": False,
+            "block_links": False,
+            "vote_show_numbers": True,
+        }
+        if feature not in defaults:
+            await callback.answer("Неизвестная настройка чата.", show_alert=True)
+            return
+        cfg = await engine.storage.get_chat_settings(chat_id)
+        new_value = not bool(cfg.get(feature, defaults[feature]))
+        await engine.storage.set_chat_setting(chat_id, feature, new_value)
+        cfg[feature] = new_value
+        await callback.message.edit_text(
+            "🙊 <b>Чат во время игры</b>\n\n"
+            "🔒 Базовые правила всегда активны: ночью город молчит, зрители и выбывшие не вмешиваются, "
+            "а заблокированный игрок не говорит и не голосует.\n\n"
+            "Дополнительная модерация применяется с <b>следующей регистрацией</b> и сохраняется при рестарте бота.\n"
+            "🔢 «№ + имя» меняет подписи кнопок выдвижения кандидата.",
+            reply_markup=admin_chat_rules_keyboard(chat_id, cfg),
+        )
+        await callback.answer("Настройка сохранена для следующей игры.")
         return
 
     if action == "misc":
