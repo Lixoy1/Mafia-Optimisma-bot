@@ -23,12 +23,23 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        token = os.getenv("BOT_TOKEN", "").strip()
+        token = (
+            os.getenv("BOT_TOKEN", "").strip()
+            or os.getenv("TG_TOKEN", "").strip()
+            or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        )
         if not token:
-            raise RuntimeError("Заполни BOT_TOKEN в .env или переменной окружения")
+            raise RuntimeError("Заполни BOT_TOKEN или TG_TOKEN")
+        raw_db = os.getenv("DATABASE_PATH", "").strip()
+        if raw_db:
+            database_path = raw_db
+        elif os.path.isdir("/data"):
+            database_path = "/data/mafia_optimisma.sqlite3"
+        else:
+            database_path = "mafia_optimisma.sqlite3"
         return cls(
             bot_token=token,
-            database_path=os.getenv("DATABASE_PATH", "mafia_optimisma.sqlite3"),
+            database_path=database_path,
             registration_seconds=int(os.getenv("REGISTRATION_SECONDS", "90")),
             registration_warning_seconds=int(os.getenv("REGISTRATION_WARNING_SECONDS", "30")),
             night_seconds=int(os.getenv("NIGHT_SECONDS", "60")),
